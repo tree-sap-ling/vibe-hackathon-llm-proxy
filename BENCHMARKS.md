@@ -24,3 +24,30 @@ close to the configured 1000 ms upstream delay.
 This benchmark validates the proxy's asynchronous request path and
 bounded-concurrency mechanism. It does not establish the optimal
 production concurrency limit for a real LLM provider.
+
+## Streaming TTFT Baseline
+
+Local end-to-end streaming measurements through the proxy.
+
+Configuration:
+
+- mock chunk delay: 300 ms
+- message: `hello streaming world`
+- five text chunks plus one final completion chunk
+- proxy and mock provider running on the same VM
+
+| Mock first-chunk delay | Measured TTFT | TTFT difference | Measured total time |
+|---:|---:|---:|---:|
+| 500 ms | 579.2 ms | +79.2 ms | 1795.2 ms |
+| 1000 ms | 1080.6 ms | +80.6 ms | 2289.5 ms |
+| 2000 ms | 2085.4 ms | +85.4 ms | 3290.8 ms |
+
+### Observation
+
+The measured time to first streamed data event follows the configured
+upstream first-chunk delay closely. In these local runs, the additional
+end-to-end delay remained roughly constant as the upstream delay grew.
+
+These measurements include client, HTTP, proxy, mock-provider, and
+event-loop overhead. They should not be interpreted as an isolated
+measurement of proxy-only overhead.
