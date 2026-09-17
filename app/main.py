@@ -4,9 +4,10 @@ from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.stats import ProxyStats
+from app.streaming import relay_stream
 
 
 class ConcurrencyGate:
@@ -125,12 +126,73 @@ async def chat_completions(request: Request):
             detail="Proxy overloaded",
         )
 
+    release_gate = True
+
     try:
         payload = await request.json()
 
         upstream_url = (
             f"{get_upstream_base_url()}/v1/chat/completions"
         )
+
+        if payload.get("stream") is True:
+            upstream_request = (
+                request.app.state.http_client.build_request(
+                    "POST",
+                    upstream_url,
+                    json=payload,
+                )
+            )
+
+            try:
+                upstream_response = (
+                    await request.app.state.http_client.send(
+                        upstream_request,
+                        stream=True,
+                    )
+                )
+            except httpx.TimeoutException as exc:
+                await request.app.state.stats.increment(
+                    "upstream_timeouts"
+                )
+                raise HTTPException(
+                    status_code=504,
+                    detail="Upstream provider timed out",
+                ) from exc
+            except httpx.RequestError as exc:
+                await request.app.state.stats.increment(
+                    "upstream_errors"
+                )
+                raise HTTPException(
+                    status_code=502,
+                    detail="Upstream provider is unavailable",
+                ) from exc
+
+            content_type = upstream_response.headers.get(
+                "content-type"
+            )
+
+            response_headers = {}
+
+            if content_type:
+                response_headers["content-type"] = content_type
+
+            release_gate = False
+
+            return StreamingResponse(
+                relay_stream(
+                    upstream_response,
+                    request.app.state.stats,
+                    request.app.state.concurrency_gate,
+                ),
+                status_code=upstream_response.status_code,
+                headers=response_headers,
+                media_type=(
+                    None
+                    if content_type
+                    else "text/event-stream"
+                ),
+            )
 
         try:
             upstream_response = await request.app.state.http_client.post(
@@ -163,4 +225,5 @@ async def chat_completions(request: Request):
             content=upstream_response.json(),
         )
     finally:
-        await request.app.state.concurrency_gate.release()
+        if release_gate:
+            await request.app.state.concurrency_gate.release()
