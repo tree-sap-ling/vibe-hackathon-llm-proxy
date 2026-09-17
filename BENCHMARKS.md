@@ -51,3 +51,31 @@ end-to-end delay remained roughly constant as the upstream delay grew.
 These measurements include client, HTTP, proxy, mock-provider, and
 event-loop overhead. They should not be interpreted as an isolated
 measurement of proxy-only overhead.
+
+## Direct vs Proxy Streaming TTFT
+
+Four paired local measurements compared the mock provider directly
+on port 9000 with the same request routed through the proxy on port 8000.
+
+| Run | Direct TTFT | Proxy TTFT | Difference |
+|---:|---:|---:|---:|
+| 1 | 574.6 ms | 583.3 ms | +8.7 ms |
+| 2 | 581.9 ms | 575.8 ms | -6.1 ms |
+| 3 | 569.7 ms | 574.5 ms | +4.8 ms |
+| 4 | 570.7 ms | 572.6 ms | +1.9 ms |
+
+Average direct TTFT: 574.2 ms.
+
+Average proxy TTFT: 576.6 ms.
+
+Average paired difference: +2.3 ms.
+
+Median paired difference: +3.4 ms.
+
+The small positive and negative differences between individual runs
+indicate measurement noise at this scale. In this local setup, the
+additional TTFT introduced by the proxy is on the order of only a few
+milliseconds and is close to the noise floor of this simple benchmark.
+
+These measurements are local development results and should not be
+generalized to a production network or real LLM provider.
