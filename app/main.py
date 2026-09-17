@@ -6,6 +6,8 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from app.stats import ProxyStats
+
 
 class ConcurrencyGate:
     def __init__(self, limit: int):
@@ -24,6 +26,13 @@ class ConcurrencyGate:
     async def release(self) -> None:
         async with self.lock:
             self.in_flight -= 1
+
+    async def snapshot(self):
+        async with self.lock:
+            return {
+                "in_flight": self.in_flight,
+                "max_in_flight": self.limit,
+            }
 
 
 def get_upstream_base_url():
@@ -53,6 +62,7 @@ async def lifespan(app: FastAPI):
     app.state.concurrency_gate = ConcurrencyGate(
         limit=get_max_in_flight()
     )
+    app.state.stats = ProxyStats()
 
     yield
 
@@ -68,6 +78,17 @@ app = FastAPI(
 @app.get("/healthz")
 async def healthz():
     return {"status": "ok"}
+
+
+@app.get("/stats")
+async def stats(request: Request):
+    counters = await request.app.state.stats.snapshot()
+    concurrency = await request.app.state.concurrency_gate.snapshot()
+
+    return {
+        **concurrency,
+        **counters,
+    }
 
 
 @app.get("/readyz")
@@ -91,9 +112,14 @@ async def readyz(request: Request):
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
+    await request.app.state.stats.increment("total_requests")
+
     acquired = await request.app.state.concurrency_gate.try_acquire()
 
     if not acquired:
+        await request.app.state.stats.increment(
+            "overload_rejections"
+        )
         raise HTTPException(
             status_code=503,
             detail="Proxy overloaded",
@@ -112,15 +138,25 @@ async def chat_completions(request: Request):
                 json=payload,
             )
         except httpx.TimeoutException as exc:
+            await request.app.state.stats.increment(
+                "upstream_timeouts"
+            )
             raise HTTPException(
                 status_code=504,
                 detail="Upstream provider timed out",
             ) from exc
         except httpx.RequestError as exc:
+            await request.app.state.stats.increment(
+                "upstream_errors"
+            )
             raise HTTPException(
                 status_code=502,
                 detail="Upstream provider is unavailable",
             ) from exc
+
+        await request.app.state.stats.increment(
+            "completed_requests"
+        )
 
         return JSONResponse(
             status_code=upstream_response.status_code,
