@@ -1,0 +1,29 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+
+# Logs and runtime files
+*.log
+*.pid
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Temporary files
+tmp/
+temp/
