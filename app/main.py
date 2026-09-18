@@ -139,21 +139,28 @@ async def stats(request: Request):
 
 @app.get("/readyz")
 async def readyz(request: Request):
-    upstream_url = f"{get_upstream_base_url()}/healthz"
-
-    try:
-        upstream_response = await request.app.state.http_client.get(
-            upstream_url,
-            timeout=1.0,
-        )
-        upstream_response.raise_for_status()
-    except httpx.HTTPError:
-        return JSONResponse(
-            status_code=503,
-            content={"status": "not_ready"},
+    for runtime in request.app.state.provider_runtimes:
+        upstream_url = (
+            f"{runtime.config.base_url}/healthz"
         )
 
-    return {"status": "ready"}
+        try:
+            upstream_response = (
+                await request.app.state.http_client.get(
+                    upstream_url,
+                    timeout=1.0,
+                )
+            )
+            upstream_response.raise_for_status()
+        except httpx.HTTPError:
+            continue
+
+        return {"status": "ready"}
+
+    return JSONResponse(
+        status_code=503,
+        content={"status": "not_ready"},
+    )
 
 
 @app.post("/v1/chat/completions")
