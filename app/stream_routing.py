@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
@@ -20,8 +21,14 @@ async def route_stream_request(
     provider_runtimes,
     payload,
     stats,
+    routing_timeout: float | None = None,
 ) -> StreamingRoutingResult:
     last_error = None
+    deadline = None
+    loop = asyncio.get_running_loop()
+
+    if routing_timeout is not None:
+        deadline = loop.time() + max(0.0, routing_timeout)
 
     for runtime in provider_runtimes:
         allowed = await runtime.circuit_breaker.allow_request()
@@ -33,6 +40,15 @@ async def route_stream_request(
                 last_error = "circuit_open"
 
             continue
+
+        remaining = None
+
+        if deadline is not None:
+            remaining = deadline - loop.time()
+
+            if remaining <= 0:
+                await stats.increment("upstream_timeouts")
+                return StreamingRoutingResult(error="timeout")
 
         upstream_url = (
             f"{runtime.config.base_url}/v1/chat/completions"
@@ -46,10 +62,22 @@ async def route_stream_request(
         )
 
         try:
-            response = await http_client.send(
-                upstream_request,
-                stream=True,
-            )
+            if remaining is None:
+                response = await http_client.send(
+                    upstream_request,
+                    stream=True,
+                )
+            else:
+                async with asyncio.timeout(remaining):
+                    response = await http_client.send(
+                        upstream_request,
+                        stream=True,
+                    )
+
+        except TimeoutError:
+            await runtime.circuit_breaker.record_failure()
+            await stats.increment("upstream_timeouts")
+            return StreamingRoutingResult(error="timeout")
 
         except httpx.TimeoutException:
             await runtime.circuit_breaker.record_failure()
@@ -71,8 +99,23 @@ async def route_stream_request(
 
         stream_iterator = response.aiter_raw()
 
+        remaining = None
+
+        if deadline is not None:
+            remaining = deadline - loop.time()
+
+            if remaining <= 0:
+                await response.aclose()
+                await runtime.circuit_breaker.record_failure()
+                await stats.increment("upstream_timeouts")
+                return StreamingRoutingResult(error="timeout")
+
         try:
-            first_chunk = await anext(stream_iterator)
+            if remaining is None:
+                first_chunk = await anext(stream_iterator)
+            else:
+                async with asyncio.timeout(remaining):
+                    first_chunk = await anext(stream_iterator)
 
         except StopAsyncIteration:
             await response.aclose()
@@ -80,6 +123,12 @@ async def route_stream_request(
             await stats.increment("upstream_errors")
             last_error = "unavailable"
             continue
+
+        except TimeoutError:
+            await response.aclose()
+            await runtime.circuit_breaker.record_failure()
+            await stats.increment("upstream_timeouts")
+            return StreamingRoutingResult(error="timeout")
 
         except httpx.TimeoutException:
             await response.aclose()

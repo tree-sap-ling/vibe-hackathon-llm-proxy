@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 
 import httpx
@@ -47,6 +48,32 @@ class FakeHttpClient:
         raise AssertionError(f"Unknown action: {action}")
 
 
+class SlowPrimaryHttpClient:
+    def __init__(self):
+        self.calls = []
+
+    async def post(self, url, **kwargs):
+        self.calls.append(url)
+
+        if url.startswith("http://primary:9000"):
+            await asyncio.sleep(0.05)
+
+            return httpx.Response(
+                200,
+                json={"provider": "primary"},
+                request=httpx.Request("POST", url),
+            )
+
+        if url.startswith("http://fallback:9001"):
+            return httpx.Response(
+                200,
+                json={"provider": "fallback"},
+                request=httpx.Request("POST", url),
+            )
+
+        raise AssertionError(f"Unexpected URL: {url}")
+
+
 def make_runtimes():
     return build_provider_runtimes(
         providers=[
@@ -65,6 +92,35 @@ def make_runtimes():
 
 
 class NonStreamRoutingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_total_routing_budget_stops_before_fallback(self):
+        runtimes = make_runtimes()
+        client = SlowPrimaryHttpClient()
+        stats = FakeStats()
+
+        result = await route_non_stream_request(
+            client,
+            runtimes,
+            {"messages": []},
+            stats,
+            routing_timeout=0.01,
+        )
+
+        self.assertIsNone(result.response)
+        self.assertEqual(result.error, "timeout")
+
+        self.assertEqual(
+            client.calls,
+            [
+                "http://primary:9000/v1/chat/completions",
+            ],
+        )
+
+        self.assertEqual(
+            stats.values.get("upstream_timeouts"),
+            1,
+        )
+
+
     async def test_primary_success_does_not_call_fallback(self):
         runtimes = make_runtimes()
 

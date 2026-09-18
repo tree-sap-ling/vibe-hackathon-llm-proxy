@@ -1,3 +1,4 @@
+import asyncio
 import os
 import unittest
 from unittest.mock import patch
@@ -197,7 +198,240 @@ class FallbackStreamingAsyncClient:
         pass
 
 
+class SlowFirstChunkStream(httpx.AsyncByteStream):
+    async def __aiter__(self):
+        await asyncio.sleep(0.05)
+
+        yield b'data: {"message":"too late"}\n\n'
+
+    async def aclose(self):
+        pass
+
+
+class StreamingBudgetAsyncClient:
+    def __init__(self):
+        self.send_calls = []
+
+    def build_request(self, method, url, **kwargs):
+        return httpx.Request(
+            method,
+            url,
+            json=kwargs.get("json"),
+            headers=kwargs.get("headers"),
+        )
+
+    async def send(self, request, **kwargs):
+        url = str(request.url)
+        self.send_calls.append(url)
+
+        if url.startswith("http://primary:9000"):
+            return httpx.Response(
+                200,
+                headers={
+                    "content-type": "text/event-stream",
+                },
+                stream=SlowFirstChunkStream(),
+                request=request,
+            )
+
+        if url.startswith("http://fallback:9001"):
+            raise AssertionError(
+                "Fallback must not start after routing budget expires"
+            )
+
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    async def get(self, url, **kwargs):
+        request = httpx.Request("GET", url)
+
+        return httpx.Response(
+            200,
+            json={"status": "ok"},
+            request=request,
+        )
+
+    async def aclose(self):
+        pass
+
+
+class SlowAfterFirstChunkStream(httpx.AsyncByteStream):
+    async def __aiter__(self):
+        yield b'data: {"message":"first"}\n\n'
+
+        await asyncio.sleep(0.05)
+
+        yield b'data: {"message":"second"}\n\n'
+        yield b'data: [DONE]\n\n'
+
+    async def aclose(self):
+        pass
+
+
+class PostRoutingBudgetAsyncClient:
+    def __init__(self):
+        self.send_calls = []
+
+    def build_request(self, method, url, **kwargs):
+        return httpx.Request(
+            method,
+            url,
+            json=kwargs.get("json"),
+            headers=kwargs.get("headers"),
+        )
+
+    async def send(self, request, **kwargs):
+        url = str(request.url)
+        self.send_calls.append(url)
+
+        if url.startswith("http://primary:9000"):
+            return httpx.Response(
+                200,
+                headers={
+                    "content-type": "text/event-stream",
+                },
+                stream=SlowAfterFirstChunkStream(),
+                request=request,
+            )
+
+        if url.startswith("http://fallback:9001"):
+            raise AssertionError(
+                "Fallback must not be used after first chunk"
+            )
+
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    async def get(self, url, **kwargs):
+        request = httpx.Request("GET", url)
+
+        return httpx.Response(
+            200,
+            json={"status": "ok"},
+            request=request,
+        )
+
+    async def aclose(self):
+        pass
+
+
 class StreamFallbackIntegrationTests(unittest.TestCase):
+    def test_routing_budget_does_not_limit_stream_after_first_chunk(self):
+        fake_client = PostRoutingBudgetAsyncClient()
+
+        env = {
+            "UPSTREAM_BASE_URL": "http://primary:9000",
+            "FALLBACK_UPSTREAM_BASE_URL": "http://fallback:9001",
+            "ROUTING_TIMEOUT_SECONDS": "0.01",
+        }
+
+        with patch.dict(os.environ, env, clear=False):
+            with patch.object(
+                app_module.httpx,
+                "AsyncClient",
+                return_value=fake_client,
+            ):
+                with TestClient(app_module.app) as client:
+                    response = client.post(
+                        "/v1/chat/completions",
+                        json={
+                            "model": "mock-model",
+                            "stream": True,
+                            "messages": [
+                                {
+                                    "role": "user",
+                                    "content": "long stream test",
+                                }
+                            ],
+                        },
+                    )
+
+                    stats = client.portal.call(
+                        app_module.app.state.stats.snapshot
+                    )
+
+        self.assertEqual(response.status_code, 200)
+
+        self.assertIn(
+            'data: {"message":"first"}',
+            response.text,
+        )
+        self.assertIn(
+            'data: {"message":"second"}',
+            response.text,
+        )
+        self.assertIn(
+            "data: [DONE]",
+            response.text,
+        )
+
+        self.assertEqual(
+            fake_client.send_calls,
+            [
+                "http://primary:9000/v1/chat/completions",
+            ],
+        )
+
+        self.assertEqual(
+            stats["upstream_timeouts"],
+            0,
+        )
+        self.assertEqual(
+            stats["completed_requests"],
+            1,
+        )
+
+    def test_routing_budget_expires_before_first_chunk(self):
+        fake_client = StreamingBudgetAsyncClient()
+
+        env = {
+            "UPSTREAM_BASE_URL": "http://primary:9000",
+            "FALLBACK_UPSTREAM_BASE_URL": "http://fallback:9001",
+            "ROUTING_TIMEOUT_SECONDS": "0.01",
+        }
+
+        with patch.dict(os.environ, env, clear=False):
+            with patch.object(
+                app_module.httpx,
+                "AsyncClient",
+                return_value=fake_client,
+            ):
+                with TestClient(app_module.app) as client:
+                    response = client.post(
+                        "/v1/chat/completions",
+                        json={
+                            "model": "mock-model",
+                            "stream": True,
+                            "messages": [
+                                {
+                                    "role": "user",
+                                    "content": "routing budget test",
+                                }
+                            ],
+                        },
+                    )
+
+                    stats = client.portal.call(
+                        app_module.app.state.stats.snapshot
+                    )
+
+        self.assertEqual(response.status_code, 504)
+
+        self.assertEqual(
+            response.json(),
+            {"detail": "Upstream provider timed out"},
+        )
+
+        self.assertEqual(
+            fake_client.send_calls,
+            [
+                "http://primary:9000/v1/chat/completions",
+            ],
+        )
+
+        self.assertEqual(
+            stats["upstream_timeouts"],
+            1,
+        )
+
     def test_failure_after_first_chunk_does_not_use_fallback(self):
         fake_client = PostFirstChunkFailureAsyncClient()
 

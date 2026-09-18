@@ -58,6 +58,20 @@ def get_max_in_flight():
     return max(1, value)
 
 
+def get_routing_timeout():
+    raw_value = os.getenv(
+        "ROUTING_TIMEOUT_SECONDS",
+        "5",
+    )
+
+    try:
+        value = float(raw_value)
+    except ValueError:
+        value = 5.0
+
+    return max(0.001, value)
+
+
 def get_circuit_failure_threshold():
     raw_value = os.getenv(
         "CIRCUIT_FAILURE_THRESHOLD",
@@ -96,6 +110,7 @@ async def lifespan(app: FastAPI):
         limit=get_max_in_flight()
     )
     app.state.stats = ProxyStats()
+    app.state.routing_timeout = get_routing_timeout()
 
     app.state.provider_runtimes = build_provider_runtimes(
         providers=get_provider_configs(),
@@ -204,6 +219,7 @@ async def chat_completions(request: Request):
                 request.app.state.provider_runtimes,
                 payload,
                 request.app.state.stats,
+                routing_timeout=request.app.state.routing_timeout,
             )
 
             if routing_result.response is None:
@@ -267,6 +283,7 @@ async def chat_completions(request: Request):
             request.app.state.provider_runtimes,
             payload,
             request.app.state.stats,
+            routing_timeout=request.app.state.routing_timeout,
         )
 
         if routing_result.response is not None:

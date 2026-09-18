@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import dataclass
 
 import httpx
@@ -24,8 +25,15 @@ async def route_non_stream_request(
     provider_runtimes,
     payload,
     stats,
+    routing_timeout: float | None = None,
 ) -> RoutingResult:
     last_error = None
+
+    deadline = None
+
+    if routing_timeout is not None:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.0, routing_timeout)
 
     for runtime in provider_runtimes:
         allowed = await runtime.circuit_breaker.allow_request()
@@ -38,16 +46,41 @@ async def route_non_stream_request(
 
             continue
 
+        remaining = None
+
+        if deadline is not None:
+            remaining = deadline - asyncio.get_running_loop().time()
+
+            if remaining <= 0:
+                await stats.increment("upstream_timeouts")
+                return RoutingResult(error="timeout")
+
         upstream_url = (
             f"{runtime.config.base_url}/v1/chat/completions"
         )
 
         try:
-            response = await http_client.post(
-                upstream_url,
-                json=payload,
-                headers=build_headers(runtime.config.api_key),
-            )
+            if remaining is None:
+                response = await http_client.post(
+                    upstream_url,
+                    json=payload,
+                    headers=build_headers(runtime.config.api_key),
+                )
+            else:
+                async with asyncio.timeout(remaining):
+                    response = await http_client.post(
+                        upstream_url,
+                        json=payload,
+                        headers=build_headers(
+                            runtime.config.api_key
+                        ),
+                    )
+
+        except TimeoutError:
+            await runtime.circuit_breaker.record_failure()
+            await stats.increment("upstream_timeouts")
+
+            return RoutingResult(error="timeout")
 
         except httpx.TimeoutException:
             await runtime.circuit_breaker.record_failure()
