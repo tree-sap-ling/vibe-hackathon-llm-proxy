@@ -6,6 +6,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from app.non_stream_routing import route_non_stream_request
 from app.provider_runtime import build_provider_runtimes
 from app.providers import get_provider_configs
 from app.stats import ProxyStats
@@ -254,55 +255,44 @@ async def chat_completions(request: Request):
                 ),
             )
 
-        allowed = (
-            await request.app.state.circuit_breaker.allow_request()
+        routing_result = await route_non_stream_request(
+            request.app.state.http_client,
+            request.app.state.provider_runtimes,
+            payload,
+            request.app.state.stats,
         )
 
-        if not allowed:
+        if routing_result.response is not None:
             await request.app.state.stats.increment(
-                "circuit_open_rejections"
+                "completed_requests"
             )
+
+            return JSONResponse(
+                status_code=routing_result.response.status_code,
+                content=routing_result.response.json(),
+            )
+
+        if routing_result.error == "timeout":
+            raise HTTPException(
+                status_code=504,
+                detail="Upstream provider timed out",
+            )
+
+        if routing_result.error == "circuit_open":
             raise HTTPException(
                 status_code=503,
                 detail="Upstream circuit is open",
             )
 
-        try:
-            upstream_response = await request.app.state.http_client.post(
-                upstream_url,
-                json=payload,
-            )
-        except httpx.TimeoutException as exc:
-            await request.app.state.circuit_breaker.record_failure()
-            await request.app.state.stats.increment(
-                "upstream_timeouts"
-            )
-            raise HTTPException(
-                status_code=504,
-                detail="Upstream provider timed out",
-            ) from exc
-        except httpx.RequestError as exc:
-            await request.app.state.circuit_breaker.record_failure()
-            await request.app.state.stats.increment(
-                "upstream_errors"
-            )
+        if routing_result.error == "upstream_5xx":
             raise HTTPException(
                 status_code=502,
-                detail="Upstream provider is unavailable",
-            ) from exc
+                detail="Upstream provider failed",
+            )
 
-        if upstream_response.status_code >= 500:
-            await request.app.state.circuit_breaker.record_failure()
-        else:
-            await request.app.state.circuit_breaker.record_success()
-
-        await request.app.state.stats.increment(
-            "completed_requests"
-        )
-
-        return JSONResponse(
-            status_code=upstream_response.status_code,
-            content=upstream_response.json(),
+        raise HTTPException(
+            status_code=502,
+            detail="Upstream provider is unavailable",
         )
     finally:
         if release_gate:
