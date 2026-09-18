@@ -10,12 +10,14 @@ class ProxyStatsTests(unittest.IsolatedAsyncioTestCase):
         await stats.increment("total_requests")
         await stats.increment("total_requests")
         await stats.increment("overload_rejections")
+        await stats.increment("circuit_open_rejections")
 
         snapshot = await stats.snapshot()
 
         self.assertEqual(snapshot["total_requests"], 2)
         self.assertEqual(snapshot["completed_requests"], 0)
         self.assertEqual(snapshot["overload_rejections"], 1)
+        self.assertEqual(snapshot["circuit_open_rejections"], 1)
         self.assertEqual(snapshot["upstream_errors"], 0)
         self.assertEqual(snapshot["upstream_timeouts"], 0)
 

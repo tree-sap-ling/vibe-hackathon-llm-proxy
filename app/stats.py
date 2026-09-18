@@ -8,6 +8,7 @@ class ProxyStats:
         self.total_requests = 0
         self.completed_requests = 0
         self.overload_rejections = 0
+        self.circuit_open_rejections = 0
         self.upstream_errors = 0
         self.upstream_timeouts = 0
 
@@ -22,6 +23,7 @@ class ProxyStats:
                 "total_requests": self.total_requests,
                 "completed_requests": self.completed_requests,
                 "overload_rejections": self.overload_rejections,
+                "circuit_open_rejections": self.circuit_open_rejections,
                 "upstream_errors": self.upstream_errors,
                 "upstream_timeouts": self.upstream_timeouts,
             }

@@ -118,10 +118,12 @@ async def healthz():
 async def stats(request: Request):
     counters = await request.app.state.stats.snapshot()
     concurrency = await request.app.state.concurrency_gate.snapshot()
+    circuit = await request.app.state.circuit_breaker.snapshot()
 
     return {
         **concurrency,
         **counters,
+        "circuit": circuit,
     }
 
 
@@ -232,6 +234,9 @@ async def chat_completions(request: Request):
         )
 
         if not allowed:
+            await request.app.state.stats.increment(
+                "circuit_open_rejections"
+            )
             raise HTTPException(
                 status_code=503,
                 detail="Upstream circuit is open",

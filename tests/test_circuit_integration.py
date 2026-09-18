@@ -77,6 +77,9 @@ class CircuitBreakerIntegrationTests(unittest.TestCase):
                 snapshot = client.portal.call(
                     breaker.snapshot
                 )
+                stats_snapshot = client.portal.call(
+                    app_module.app.state.stats.snapshot
+                )
 
         self.assertEqual(first.status_code, 502)
         self.assertEqual(second.status_code, 502)
@@ -91,6 +94,10 @@ class CircuitBreakerIntegrationTests(unittest.TestCase):
         self.assertEqual(fake_client.post_calls, 3)
         self.assertEqual(snapshot["state"], "open")
         self.assertEqual(snapshot["failure_count"], 3)
+        self.assertEqual(
+            stats_snapshot["circuit_open_rejections"],
+            1,
+        )
 
 
 if __name__ == "__main__":
