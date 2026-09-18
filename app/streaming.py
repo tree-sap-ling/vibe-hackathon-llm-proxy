@@ -6,12 +6,20 @@ async def relay_stream(
     stats,
     concurrency_gate,
     circuit_breaker,
+    first_chunk: bytes | None = None,
+    stream_iterator=None,
 ):
     completed = False
     failure_recorded = False
 
     try:
-        async for chunk in upstream_response.aiter_raw():
+        if first_chunk is not None:
+            yield first_chunk
+
+        if stream_iterator is None:
+            stream_iterator = upstream_response.aiter_raw()
+
+        async for chunk in stream_iterator:
             yield chunk
 
         completed = True

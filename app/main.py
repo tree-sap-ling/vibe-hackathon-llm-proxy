@@ -10,6 +10,7 @@ from app.non_stream_routing import route_non_stream_request
 from app.provider_runtime import build_provider_runtimes
 from app.providers import get_provider_configs
 from app.stats import ProxyStats
+from app.stream_routing import route_stream_request
 from app.streaming import relay_stream
 
 
@@ -188,52 +189,39 @@ async def chat_completions(request: Request):
         )
 
         if payload.get("stream") is True:
-            allowed = (
-                await request.app.state.circuit_breaker.allow_request()
+            routing_result = await route_stream_request(
+                request.app.state.http_client,
+                request.app.state.provider_runtimes,
+                payload,
+                request.app.state.stats,
             )
 
-            if not allowed:
-                await request.app.state.stats.increment(
-                    "circuit_open_rejections"
-                )
-                raise HTTPException(
-                    status_code=503,
-                    detail="Upstream circuit is open",
-                )
-
-            upstream_request = (
-                request.app.state.http_client.build_request(
-                    "POST",
-                    upstream_url,
-                    json=payload,
-                )
-            )
-
-            try:
-                upstream_response = (
-                    await request.app.state.http_client.send(
-                        upstream_request,
-                        stream=True,
+            if routing_result.response is None:
+                if routing_result.error == "timeout":
+                    raise HTTPException(
+                        status_code=504,
+                        detail="Upstream provider timed out",
                     )
-                )
-            except httpx.TimeoutException as exc:
-                await request.app.state.circuit_breaker.record_failure()
-                await request.app.state.stats.increment(
-                    "upstream_timeouts"
-                )
-                raise HTTPException(
-                    status_code=504,
-                    detail="Upstream provider timed out",
-                ) from exc
-            except httpx.RequestError as exc:
-                await request.app.state.circuit_breaker.record_failure()
-                await request.app.state.stats.increment(
-                    "upstream_errors"
-                )
+
+                if routing_result.error == "circuit_open":
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Upstream circuit is open",
+                    )
+
+                if routing_result.error == "upstream_5xx":
+                    raise HTTPException(
+                        status_code=502,
+                        detail="Upstream provider failed",
+                    )
+
                 raise HTTPException(
                     status_code=502,
                     detail="Upstream provider is unavailable",
-                ) from exc
+                )
+
+            upstream_response = routing_result.response
+            provider_runtime = routing_result.provider_runtime
 
             content_type = upstream_response.headers.get(
                 "content-type"
@@ -251,7 +239,9 @@ async def chat_completions(request: Request):
                     upstream_response,
                     request.app.state.stats,
                     request.app.state.concurrency_gate,
-                    request.app.state.circuit_breaker,
+                    provider_runtime.circuit_breaker,
+                    first_chunk=routing_result.first_chunk,
+                    stream_iterator=routing_result.stream_iterator,
                 ),
                 status_code=upstream_response.status_code,
                 headers=response_headers,
