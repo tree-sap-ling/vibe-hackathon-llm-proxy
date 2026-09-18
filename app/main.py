@@ -6,7 +6,8 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from app.circuit_breaker import CircuitBreaker
+from app.provider_runtime import build_provider_runtimes
+from app.providers import get_provider_configs
 from app.stats import ProxyStats
 from app.streaming import relay_stream
 
@@ -93,9 +94,17 @@ async def lifespan(app: FastAPI):
         limit=get_max_in_flight()
     )
     app.state.stats = ProxyStats()
-    app.state.circuit_breaker = CircuitBreaker(
+
+    app.state.provider_runtimes = build_provider_runtimes(
+        providers=get_provider_configs(),
         failure_threshold=get_circuit_failure_threshold(),
         recovery_timeout=get_circuit_recovery_timeout(),
+    )
+
+    # Temporary compatibility alias.
+    # Existing request code still uses the primary provider breaker.
+    app.state.circuit_breaker = (
+        app.state.provider_runtimes[0].circuit_breaker
     )
 
     yield
