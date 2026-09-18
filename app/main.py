@@ -6,6 +6,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from app.circuit_breaker import CircuitBreaker
 from app.stats import ProxyStats
 from app.streaming import relay_stream
 
@@ -54,6 +55,34 @@ def get_max_in_flight():
     return max(1, value)
 
 
+def get_circuit_failure_threshold():
+    raw_value = os.getenv(
+        "CIRCUIT_FAILURE_THRESHOLD",
+        "3",
+    )
+
+    try:
+        value = int(raw_value)
+    except ValueError:
+        value = 3
+
+    return max(1, value)
+
+
+def get_circuit_recovery_timeout():
+    raw_value = os.getenv(
+        "CIRCUIT_RECOVERY_TIMEOUT_SECONDS",
+        "5",
+    )
+
+    try:
+        value = float(raw_value)
+    except ValueError:
+        value = 5.0
+
+    return max(0.0, value)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.http_client = httpx.AsyncClient(
@@ -64,6 +93,10 @@ async def lifespan(app: FastAPI):
         limit=get_max_in_flight()
     )
     app.state.stats = ProxyStats()
+    app.state.circuit_breaker = CircuitBreaker(
+        failure_threshold=get_circuit_failure_threshold(),
+        recovery_timeout=get_circuit_recovery_timeout(),
+    )
 
     yield
 
@@ -194,12 +227,23 @@ async def chat_completions(request: Request):
                 ),
             )
 
+        allowed = (
+            await request.app.state.circuit_breaker.allow_request()
+        )
+
+        if not allowed:
+            raise HTTPException(
+                status_code=503,
+                detail="Upstream circuit is open",
+            )
+
         try:
             upstream_response = await request.app.state.http_client.post(
                 upstream_url,
                 json=payload,
             )
         except httpx.TimeoutException as exc:
+            await request.app.state.circuit_breaker.record_failure()
             await request.app.state.stats.increment(
                 "upstream_timeouts"
             )
@@ -208,6 +252,7 @@ async def chat_completions(request: Request):
                 detail="Upstream provider timed out",
             ) from exc
         except httpx.RequestError as exc:
+            await request.app.state.circuit_breaker.record_failure()
             await request.app.state.stats.increment(
                 "upstream_errors"
             )
@@ -215,6 +260,11 @@ async def chat_completions(request: Request):
                 status_code=502,
                 detail="Upstream provider is unavailable",
             ) from exc
+
+        if upstream_response.status_code >= 500:
+            await request.app.state.circuit_breaker.record_failure()
+        else:
+            await request.app.state.circuit_breaker.record_success()
 
         await request.app.state.stats.increment(
             "completed_requests"
