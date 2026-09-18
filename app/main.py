@@ -131,10 +131,20 @@ async def stats(request: Request):
     concurrency = await request.app.state.concurrency_gate.snapshot()
     circuit = await request.app.state.circuit_breaker.snapshot()
 
+    providers = {}
+
+    for runtime in request.app.state.provider_runtimes:
+        providers[runtime.config.name] = {
+            "circuit": (
+                await runtime.circuit_breaker.snapshot()
+            )
+        }
+
     return {
         **concurrency,
         **counters,
         "circuit": circuit,
+        "providers": providers,
     }
 
 
