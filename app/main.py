@@ -171,6 +171,19 @@ async def chat_completions(request: Request):
         )
 
         if payload.get("stream") is True:
+            allowed = (
+                await request.app.state.circuit_breaker.allow_request()
+            )
+
+            if not allowed:
+                await request.app.state.stats.increment(
+                    "circuit_open_rejections"
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail="Upstream circuit is open",
+                )
+
             upstream_request = (
                 request.app.state.http_client.build_request(
                     "POST",
@@ -187,6 +200,7 @@ async def chat_completions(request: Request):
                     )
                 )
             except httpx.TimeoutException as exc:
+                await request.app.state.circuit_breaker.record_failure()
                 await request.app.state.stats.increment(
                     "upstream_timeouts"
                 )
@@ -195,6 +209,7 @@ async def chat_completions(request: Request):
                     detail="Upstream provider timed out",
                 ) from exc
             except httpx.RequestError as exc:
+                await request.app.state.circuit_breaker.record_failure()
                 await request.app.state.stats.increment(
                     "upstream_errors"
                 )
@@ -219,6 +234,7 @@ async def chat_completions(request: Request):
                     upstream_response,
                     request.app.state.stats,
                     request.app.state.concurrency_gate,
+                    request.app.state.circuit_breaker,
                 ),
                 status_code=upstream_response.status_code,
                 headers=response_headers,
