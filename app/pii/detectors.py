@@ -481,3 +481,310 @@ def detect_pin(
             end=end,
             confidence=0.99,
         )
+
+
+_RU_NAME_WORD = (
+    r"[А-ЯЁ][А-ЯЁа-яё-]{1,39}"
+)
+_LATIN_NAME_WORD = (
+    r"[A-Z][A-Za-z'-]{1,39}"
+)
+
+_FIO_PATTERN = re.compile(
+    r"(?:"
+    r"\bфио\b"
+    r"|"
+    r"ф\.?\s*и\.?\s*о\.?"
+    r"|"
+    r"\bклиент\b"
+    r"|"
+    r"\bза[её]мщик\b"
+    r")"
+    r"\s*[:=-]?\s*"
+    r"(?P<value>"
+    + _RU_NAME_WORD
+    + r"\s+"
+    + _RU_NAME_WORD
+    + r"(?:\s+"
+    + _RU_NAME_WORD
+    + r")?"
+    r")",
+    re.IGNORECASE,
+)
+
+_BIRTH_PLACE_PATTERN = re.compile(
+    r"(?:"
+    r"место\s+рождения"
+    r"|"
+    r"родил(?:ся|ась)\s+в"
+    r")"
+    r"\s*[:=-]?\s*"
+    r"(?P<value>[^;\n]{2,120}?)"
+    r"(?=(?:;\s*|\n|$))",
+    re.IGNORECASE,
+)
+
+_CITIZENSHIP_PATTERN = re.compile(
+    r"\bгражданство\b"
+    r"\s*[:=-]?\s*"
+    r"(?P<value>"
+    r"[A-Za-zА-ЯЁа-яё][A-Za-zА-ЯЁа-яё .'-]{1,60}"
+    r")"
+    r"(?=(?:[;,\n]|$))",
+    re.IGNORECASE,
+)
+
+_PASSPORT_ISSUER_PATTERN = re.compile(
+    r"(?:"
+    r"кем\s+выдан(?:\s+паспорт)?"
+    r"|"
+    r"орган\s*,?\s*выдавший\s+паспорт"
+    r"|"
+    r"орган\s+выдачи(?:\s+паспорта)?"
+    r")"
+    r"\s*[:=-]?\s*"
+    r"(?P<value>[^;\n]{3,180}?)"
+    r"(?=(?:;\s*|\n|$))",
+    re.IGNORECASE,
+)
+
+_ADDRESS_PATTERN = re.compile(
+    r"(?:"
+    r"\bадрес(?:\s+(?:регистрации|проживания))?"
+    r"|"
+    r"место\s+жительства"
+    r")"
+    r"\s*[:=-]\s*"
+    r"(?P<value>[^;\n]{5,250}?)"
+    r"(?=(?:;\s*|\n|$))",
+    re.IGNORECASE,
+)
+
+_COUNTRY_PATTERN = re.compile(
+    r"\bстрана\b"
+    r"\s*[:=-]\s*"
+    r"(?P<value>"
+    r"[A-Za-zА-ЯЁа-яё][A-Za-zА-ЯЁа-яё .'-]{1,60}"
+    r")"
+    r"(?=(?:[;,\n]|$))",
+    re.IGNORECASE,
+)
+
+_POSTAL_CODE_PATTERN = re.compile(
+    r"(?:\bиндекс\b|\bпочтовый\s+индекс\b)"
+    r"\s*[:=-]?\s*"
+    r"(?P<value>\d{6})"
+    r"(?!\d)",
+    re.IGNORECASE,
+)
+
+_CITY_PATTERN = re.compile(
+    r"(?:\bгород\b|\bг\.)"
+    r"\s*[:=-]?\s*"
+    r"(?P<value>"
+    r"[А-ЯЁA-Z][А-ЯЁа-яёA-Za-z .'-]{1,80}"
+    r")"
+    r"(?=(?:[;,\n]|$))",
+    re.IGNORECASE,
+)
+
+_STREET_PATTERN = re.compile(
+    r"(?:\bулица\b|\bул\.)"
+    r"\s*[:=-]?\s*"
+    r"(?P<value>"
+    r"[А-ЯЁA-Z0-9][А-ЯЁа-яёA-Za-z0-9 .'-]{1,100}"
+    r")"
+    r"(?=(?:[;,\n]|$))",
+    re.IGNORECASE,
+)
+
+_HOUSE_PATTERN = re.compile(
+    r"(?:\bдом\b|\bд\.)"
+    r"\s*[:=-]?\s*"
+    r"(?P<value>\d+[A-Za-zА-ЯЁа-яё]?(?:[/\\-]\d+)?(?:\s*[A-Za-zА-ЯЁа-яё])?)"
+    r"(?=(?:[;,\n ]|$))",
+    re.IGNORECASE,
+)
+
+_APARTMENT_PATTERN = re.compile(
+    r"(?:\bквартира\b|\bкв\.)"
+    r"\s*[:=-]?\s*"
+    r"(?P<value>\d+[A-Za-zА-ЯЁа-яё]?)"
+    r"(?!\d)",
+    re.IGNORECASE,
+)
+
+_CARDHOLDER_NAME_PATTERN = re.compile(
+    r"(?:"
+    r"имя\s+держателя\s+карты"
+    r"|"
+    r"держатель\s+карты"
+    r"|"
+    r"cardholder(?:\s+name)?"
+    r"|"
+    r"name\s+on\s+card"
+    r")"
+    r"\s*[:=-]?\s*"
+    r"(?P<value>(?:"
+    + _RU_NAME_WORD
+    + r"|"
+    + _LATIN_NAME_WORD
+    + r")\s+(?:"
+    + _RU_NAME_WORD
+    + r"|"
+    + _LATIN_NAME_WORD
+    + r")(?:\s+(?:"
+    + _RU_NAME_WORD
+    + r"|"
+    + _LATIN_NAME_WORD
+    + r"))?"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _detect_group_value(
+    text: str,
+    pattern: re.Pattern[str],
+    pii_type: PiiType,
+    confidence: float,
+) -> Iterable[PiiEntity]:
+    for match in pattern.finditer(text):
+        start, end = match.span("value")
+
+        yield PiiEntity(
+            pii_type=pii_type,
+            start=start,
+            end=end,
+            confidence=confidence,
+        )
+
+
+def detect_fio(text: str) -> Iterable[PiiEntity]:
+    yield from _detect_group_value(
+        text,
+        _FIO_PATTERN,
+        PiiType.FIO,
+        0.94,
+    )
+
+
+def detect_birth_place(
+    text: str,
+) -> Iterable[PiiEntity]:
+    yield from _detect_group_value(
+        text,
+        _BIRTH_PLACE_PATTERN,
+        PiiType.BIRTH_PLACE,
+        0.96,
+    )
+
+
+def detect_citizenship(
+    text: str,
+) -> Iterable[PiiEntity]:
+    yield from _detect_group_value(
+        text,
+        _CITIZENSHIP_PATTERN,
+        PiiType.CITIZENSHIP,
+        0.97,
+    )
+
+
+def detect_passport_issuer(
+    text: str,
+) -> Iterable[PiiEntity]:
+    yield from _detect_group_value(
+        text,
+        _PASSPORT_ISSUER_PATTERN,
+        PiiType.PASSPORT_ISSUER,
+        0.97,
+    )
+
+
+def detect_address(
+    text: str,
+) -> Iterable[PiiEntity]:
+    yield from _detect_group_value(
+        text,
+        _ADDRESS_PATTERN,
+        PiiType.ADDRESS,
+        0.96,
+    )
+
+
+def detect_country(
+    text: str,
+) -> Iterable[PiiEntity]:
+    yield from _detect_group_value(
+        text,
+        _COUNTRY_PATTERN,
+        PiiType.COUNTRY,
+        0.96,
+    )
+
+
+def detect_postal_code(
+    text: str,
+) -> Iterable[PiiEntity]:
+    yield from _detect_group_value(
+        text,
+        _POSTAL_CODE_PATTERN,
+        PiiType.POSTAL_CODE,
+        0.98,
+    )
+
+
+def detect_city(
+    text: str,
+) -> Iterable[PiiEntity]:
+    yield from _detect_group_value(
+        text,
+        _CITY_PATTERN,
+        PiiType.CITY,
+        0.94,
+    )
+
+
+def detect_street(
+    text: str,
+) -> Iterable[PiiEntity]:
+    yield from _detect_group_value(
+        text,
+        _STREET_PATTERN,
+        PiiType.STREET,
+        0.94,
+    )
+
+
+def detect_house(
+    text: str,
+) -> Iterable[PiiEntity]:
+    yield from _detect_group_value(
+        text,
+        _HOUSE_PATTERN,
+        PiiType.HOUSE,
+        0.95,
+    )
+
+
+def detect_apartment(
+    text: str,
+) -> Iterable[PiiEntity]:
+    yield from _detect_group_value(
+        text,
+        _APARTMENT_PATTERN,
+        PiiType.APARTMENT,
+        0.95,
+    )
+
+
+def detect_cardholder_name(
+    text: str,
+) -> Iterable[PiiEntity]:
+    yield from _detect_group_value(
+        text,
+        _CARDHOLDER_NAME_PATTERN,
+        PiiType.CARDHOLDER_NAME,
+        0.97,
+    )

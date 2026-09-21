@@ -83,6 +83,18 @@ def build_default_registry() -> DetectorRegistry:
         detect_phone,
         detect_pin,
         detect_subdivision_code,
+        detect_address,
+        detect_apartment,
+        detect_birth_place,
+        detect_cardholder_name,
+        detect_citizenship,
+        detect_city,
+        detect_country,
+        detect_fio,
+        detect_house,
+        detect_passport_issuer,
+        detect_postal_code,
+        detect_street,
     )
 
     return DetectorRegistry(
@@ -98,5 +110,17 @@ def build_default_registry() -> DetectorRegistry:
             detect_driver_license,
             detect_cvv,
             detect_pin,
+            detect_fio,
+            detect_birth_place,
+            detect_citizenship,
+            detect_passport_issuer,
+            detect_address,
+            detect_country,
+            detect_postal_code,
+            detect_city,
+            detect_street,
+            detect_house,
+            detect_apartment,
+            detect_cardholder_name,
         )
     )

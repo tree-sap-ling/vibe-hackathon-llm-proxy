@@ -14,6 +14,18 @@ class PiiType(str, Enum):
     DRIVER_LICENSE = "driver_license"
     CVV = "cvv"
     PIN = "pin"
+    FIO = "fio"
+    BIRTH_PLACE = "birth_place"
+    CITIZENSHIP = "citizenship"
+    PASSPORT_ISSUER = "passport_issuer"
+    ADDRESS = "address"
+    COUNTRY = "country"
+    POSTAL_CODE = "postal_code"
+    CITY = "city"
+    STREET = "street"
+    HOUSE = "house"
+    APARTMENT = "apartment"
+    CARDHOLDER_NAME = "cardholder_name"
 
 
 @dataclass(frozen=True, slots=True)
