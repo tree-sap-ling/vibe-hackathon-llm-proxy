@@ -266,18 +266,14 @@ _DATE_VALUE_PATTERN = (
 _BIRTH_DATE_PATTERN = re.compile(
     r"(?:дата\s+рождения|родил(?:ся|ась)?)"
     r"\s*[:=-]?\s*"
-    r"(?P<value>" + _DATE_VALUE_PATTERN + r")",
+    r"(?P<value>(?:\d{1,2}[./-]\d{1,2}[./-]\d{4}|\d{4}[./-]\d{1,2}[./-]\d{1,2}|\d{1,2}\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+\d{4}(?:\s+(?:года?|г\.))?))",
     re.IGNORECASE,
 )
 
 _PASSPORT_ISSUE_DATE_PATTERN = re.compile(
-    r"(?:"
-    r"дата\s+выдачи(?:\s+паспорта)?"
-    r"|"
-    r"паспорт\s+выдан"
-    r")"
+    r"(?:дата\s+выдачи(?:\s+паспорта)?|паспорт\s+выдан)"
     r"\s*[:=-]?\s*"
-    r"(?P<value>" + _DATE_VALUE_PATTERN + r")",
+    r"(?P<value>(?:\d{1,2}[./-]\d{1,2}[./-]\d{4}|\d{4}[./-]\d{1,2}[./-]\d{1,2}|\d{1,2}\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+\d{4}(?:\s+(?:года?|г\.))?))",
     re.IGNORECASE,
 )
 
@@ -394,8 +390,14 @@ def _detect_contextual_date(
 ) -> Iterable[PiiEntity]:
     for match in pattern.finditer(text):
         value = match.group("value")
+        validation_value = re.sub(
+            r"\s+(?:года?|г\.)$",
+            "",
+            value,
+            flags=re.IGNORECASE,
+        )
 
-        if not _valid_calendar_date(value):
+        if not _valid_calendar_date(validation_value):
             continue
 
         start, end = match.span("value")
@@ -502,8 +504,11 @@ _FIO_PATTERN = re.compile(
 )
 
 _BIRTH_PLACE_PATTERN = re.compile(
-    r"место\s+рождения\s*[:=-]?\s*"
-    r"(?P<value>[^;\n]{2,120}?)(?=(?:;\s*|\n|$))",
+    r"место\s+рождения"
+    r"(?:\s+(?:клиента|заемщика|заёмщика|пользователя|пациента))?"
+    r"\s*[:=-]?\s*"
+    r"(?P<value>[^;\n]{2,120}?)"
+    r"(?=(?:;\s*|\n|$))",
     re.IGNORECASE,
 )
 
@@ -516,9 +521,11 @@ _BIRTH_PLACE_PERSONAL_NARRATIVE_PATTERN = re.compile(
 
 _CITIZENSHIP_PATTERN = re.compile(
     r"\bгражданство\b"
+    r"(?:\s+(?:клиента|заемщика|заёмщика|пользователя|пациента))?"
     r"\s*[:=-]?\s*"
     r"(?P<value>"
-    r"[A-Za-zА-ЯЁа-яё][A-Za-zА-ЯЁа-яё .'-]{1,60}"
+    r"[A-Za-zА-ЯЁа-яё]"
+    r"[A-Za-zА-ЯЁа-яё .'-]{1,60}"
     r")"
     r"(?=(?:[;,\n]|$))",
     re.IGNORECASE,
@@ -527,10 +534,9 @@ _CITIZENSHIP_PATTERN = re.compile(
 _PASSPORT_ISSUER_PATTERN = re.compile(
     r"(?:"
     r"кем\s+выдан(?:\s+паспорт)?"
-    r"|"
-    r"орган\s*,?\s*выдавший\s+паспорт"
-    r"|"
-    r"орган\s+выдачи(?:\s+паспорта)?"
+    r"|орган\s*,?\s*выдавший\s+паспорт"
+    r"|орган\s+выдачи(?:\s+паспорта)?"
+    r"|паспорт\s+выдан"
     r")"
     r"\s*[:=-]?\s*"
     r"(?P<value>[^;\n]{3,180}?)"
@@ -541,8 +547,9 @@ _PASSPORT_ISSUER_PATTERN = re.compile(
 _ADDRESS_PATTERN = re.compile(
     r"(?:"
     r"\bадрес(?:\s+(?:регистрации|проживания))?"
-    r"|"
-    r"место\s+жительства"
+    r"(?:\s+(?:клиента|заемщика|заёмщика|пользователя|пациента))?"
+    r"|место\s+жительства"
+    r"(?:\s+(?:клиента|заемщика|заёмщика|пользователя|пациента))?"
     r")"
     r"\s*[:=-]\s*"
     r"(?P<value>[^;\n]{5,250}?)"
@@ -552,9 +559,12 @@ _ADDRESS_PATTERN = re.compile(
 
 _COUNTRY_PATTERN = re.compile(
     r"\bстрана\b"
+    r"(?:\s+(?:проживания|регистрации))?"
+    r"(?:\s+(?:клиента|заемщика|заёмщика|пользователя|пациента))?"
     r"\s*[:=-]\s*"
     r"(?P<value>"
-    r"[A-Za-zА-ЯЁа-яё][A-Za-zА-ЯЁа-яё .'-]{1,60}"
+    r"[A-Za-zА-ЯЁа-яё]"
+    r"[A-Za-zА-ЯЁа-яё .'-]{1,60}"
     r")"
     r"(?=(?:[;,\n]|$))",
     re.IGNORECASE,
@@ -562,14 +572,17 @@ _COUNTRY_PATTERN = re.compile(
 
 _POSTAL_CODE_PATTERN = re.compile(
     r"(?:\bиндекс\b|\bпочтовый\s+индекс\b)"
+    r"(?:\s+(?:проживания|регистрации))?"
+    r"(?:\s+(?:клиента|заемщика|заёмщика|пользователя|пациента))?"
     r"\s*[:=-]?\s*"
-    r"(?P<value>\d{6})"
-    r"(?!\d)",
+    r"(?P<value>\d{6})(?!\d)",
     re.IGNORECASE,
 )
 
 _CITY_PATTERN = re.compile(
     r"(?:\bгород\b|\bг\.)"
+    r"(?:\s+(?:проживания|регистрации))?"
+    r"(?:\s+(?:клиента|заемщика|заёмщика|пользователя|пациента))?"
     r"\s*[:=-]?\s*"
     r"(?P<value>"
     r"[А-ЯЁA-Z][А-ЯЁа-яёA-Za-z .'-]{1,80}"
@@ -580,9 +593,12 @@ _CITY_PATTERN = re.compile(
 
 _STREET_PATTERN = re.compile(
     r"(?:\bулица\b|\bул\.)"
+    r"(?:\s+(?:проживания|регистрации))?"
+    r"(?:\s+(?:клиента|заемщика|заёмщика|пользователя|пациента))?"
     r"\s*[:=-]?\s*"
     r"(?P<value>"
-    r"[А-ЯЁA-Z0-9][А-ЯЁа-яёA-Za-z0-9 .'-]{1,100}"
+    r"[А-ЯЁA-Z0-9]"
+    r"[А-ЯЁа-яёA-Za-z0-9 .'-]{1,100}"
     r")"
     r"(?=(?:[;,\n]|$))",
     re.IGNORECASE,
@@ -590,17 +606,24 @@ _STREET_PATTERN = re.compile(
 
 _HOUSE_PATTERN = re.compile(
     r"(?:\bдом\b|\bд\.)"
+    r"(?:\s+(?:проживания|регистрации))?"
+    r"(?:\s+(?:клиента|заемщика|заёмщика|пользователя|пациента))?"
     r"\s*[:=-]?\s*"
-    r"(?P<value>\d+[A-Za-zА-ЯЁа-яё]?(?:[/\\-]\d+)?(?:\s*[A-Za-zА-ЯЁа-яё])?)"
-    r"(?=(?:[;,\n ]|$))",
+    r"(?P<value>"
+    r"\d+[A-Za-zА-ЯЁа-яё]?"
+    r"(?:[/\\-]\d+)?"
+    r"(?:\s*[A-Za-zА-ЯЁа-яё])?"
+    r")"
+    r"(?=(?:[;,\n ]|$|\.))",
     re.IGNORECASE,
 )
 
 _APARTMENT_PATTERN = re.compile(
     r"(?:\bквартира\b|\bкв\.)"
+    r"(?:\s+(?:проживания|регистрации))?"
+    r"(?:\s+(?:клиента|заемщика|заёмщика|пользователя|пациента))?"
     r"\s*[:=-]?\s*"
-    r"(?P<value>\d+[A-Za-zА-ЯЁа-яё]?)"
-    r"(?!\d)",
+    r"(?P<value>\d+[A-Za-zА-ЯЁа-яё]?)(?!\d)",
     re.IGNORECASE,
 )
 
@@ -641,6 +664,15 @@ def _detect_group_value(
 ) -> Iterable[PiiEntity]:
     for match in pattern.finditer(text):
         start, end = match.span("value")
+
+        while (
+            end > start
+            and text[end - 1] in " \t\r\n.,!?"
+        ):
+            end -= 1
+
+        if end <= start:
+            continue
 
         yield PiiEntity(
             pii_type=pii_type,
@@ -785,6 +817,15 @@ def _detect_address_component(
             continue
 
         start, end = match.span("value")
+
+        while (
+            end > start
+            and text[end - 1] in " \t\r\n.,!?"
+        ):
+            end -= 1
+
+        if end <= start:
+            continue
 
         yield PiiEntity(
             pii_type=pii_type,

@@ -220,7 +220,7 @@ class PiiIdentityAddressTests(unittest.TestCase):
                 personal_text,
                 PiiType.BIRTH_PLACE,
             ),
-            ["Омске."],
+            ["Омске"],
         )
 
     def test_inline_components_require_personal_address_context(self):
