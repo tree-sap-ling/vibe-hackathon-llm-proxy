@@ -74,6 +74,8 @@ class PiiContextualDetectorTests(unittest.TestCase):
         text = (
             "Водительское удостоверение: "
             "77 77 123456; "
+            "Водительское удостоверение: "
+            "серия 66 66 номер 654321; "
             "а просто 88 88 654321."
         )
 
@@ -82,7 +84,18 @@ class PiiContextualDetectorTests(unittest.TestCase):
                 text,
                 PiiType.DRIVER_LICENSE,
             ),
-            ["77 77 123456"],
+            [
+                "77 77 123456",
+                "66 66 номер 654321",
+            ],
+        )
+
+        self.assertEqual(
+            self.values_for(
+                text,
+                PiiType.PASSPORT_RF,
+            ),
+            [],
         )
 
     def test_cvv_requires_context(self):

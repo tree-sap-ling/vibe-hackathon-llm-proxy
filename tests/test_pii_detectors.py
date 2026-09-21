@@ -159,7 +159,9 @@ class PiiDetectorTests(unittest.TestCase):
         text = (
             "ПАСПОРТ 4510123456; "
             "серия 45 10 номер 654321; "
-            "ещё 4510 111222."
+            "ещё 4510 111222 без контекста; "
+            "Водительское удостоверение: "
+            "серия 77 77 номер 123456."
         )
 
         values = [
@@ -167,9 +169,13 @@ class PiiDetectorTests(unittest.TestCase):
             for entity in detect_passport_rf(text)
         ]
 
-        self.assertIn("4510123456", values)
-        self.assertIn("45 10 номер 654321", values)
-        self.assertIn("4510 111222", values)
+        self.assertEqual(
+            values,
+            [
+                "4510123456",
+                "45 10 номер 654321",
+            ],
+        )
 
     def test_subdivision_code_requires_context(self):
         text = (

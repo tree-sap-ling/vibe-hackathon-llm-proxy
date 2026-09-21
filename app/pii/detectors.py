@@ -48,15 +48,6 @@ _PASSPORT_CONTEXT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-_PASSPORT_PLAIN_PATTERN = re.compile(
-    r"(?<!\d)"
-    r"(?P<value>"
-    r"(?:\d{4}\s+\d{6})"
-    r"|"
-    r"(?:\d{2}\s+\d{2}\s+\d{6})"
-    r")"
-    r"(?!\d)"
-)
 
 _SUBDIVISION_CODE_PATTERN = re.compile(
     r"\bкод\s+подразделения"
@@ -208,28 +199,28 @@ def detect_bank_card(text: str) -> Iterable[PiiEntity]:
         )
 
 
-def detect_passport_rf(text: str) -> Iterable[PiiEntity]:
-    seen_spans = set()
+def detect_passport_rf(
+    text: str,
+) -> Iterable[PiiEntity]:
+    for match in _PASSPORT_CONTEXT_PATTERN.finditer(text):
+        prefix = text[
+            max(0, match.start() - 80):match.start()
+        ]
 
-    for pattern in (
-        _PASSPORT_CONTEXT_PATTERN,
-        _PASSPORT_PLAIN_PATTERN,
-    ):
-        for match in pattern.finditer(text):
-            start, end = match.span("value")
-            span = (start, end)
+        if (
+            _DRIVER_LICENSE_CONTEXT_BEFORE_SERIES_PATTERN
+            .search(prefix)
+        ):
+            continue
 
-            if span in seen_spans:
-                continue
+        start, end = match.span("value")
 
-            seen_spans.add(span)
-
-            yield PiiEntity(
-                pii_type=PiiType.PASSPORT_RF,
-                start=start,
-                end=end,
-                confidence=0.97,
-            )
+        yield PiiEntity(
+            pii_type=PiiType.PASSPORT_RF,
+            start=start,
+            end=end,
+            confidence=0.97,
+        )
 
 
 def detect_subdivision_code(text: str) -> Iterable[PiiEntity]:
@@ -290,17 +281,16 @@ _PASSPORT_ISSUE_DATE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_DRIVER_LICENSE_CONTEXT_BEFORE_SERIES_PATTERN = re.compile(
+    r"(?:водительск(?:ое|ого)\s+удостоверени(?:е|я)|в\s*/\s*у|\bву\b)"
+    r"\s*[:№N=-]?\s*$",
+    re.IGNORECASE,
+)
+
 _DRIVER_LICENSE_PATTERN = re.compile(
-    r"(?:"
-    r"водительск(?:ое|ого)\s+удостоверени(?:е|я)"
-    r"|"
-    r"в\s*/\s*у"
-    r"|"
-    r"\bву\b"
-    r")"
-    r"\s*[:№N=-]?\s*"
-    r"(?P<value>\d{2}\s?\d{2}\s?\d{6})"
-    r"(?!\d)",
+    r"(?:водительск(?:ое|ого)\s+удостоверени(?:е|я)|в\s*/\s*у|\bву\b)"
+    r"\s*[:№N=-]?\s*(?:серия\s*)?"
+    r"(?P<value>\d{2}\s?\d{2}\s*(?:номер|№|N)?\s*\d{6})(?!\d)",
     re.IGNORECASE,
 )
 
