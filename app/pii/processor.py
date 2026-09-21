@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from time import perf_counter
 
 from app.pii.masking import MaskingVault, mask_text
 from app.pii.models import PiiType
@@ -13,6 +14,7 @@ class PreparedRequest:
     detected_types: tuple[PiiType, ...]
     entity_count: int
     demask_enabled: bool
+    processing_ms: float
     vault: MaskingVault
 
 
@@ -34,6 +36,8 @@ class PiiProcessor:
         system_id: str,
         text: str,
     ) -> PreparedRequest:
+        started = perf_counter()
+
         policy = self._policy_registry.get_authorized(
             system_id
         )
@@ -48,12 +52,17 @@ class PiiProcessor:
             entities,
         )
 
+        processing_ms = (
+            perf_counter() - started
+        ) * 1000.0
+
         return PreparedRequest(
             system_id=policy.system_id,
             masked_text=masked.text,
             detected_types=masked.detected_types,
             entity_count=masked.entity_count,
             demask_enabled=policy.demask_enabled,
+            processing_ms=processing_ms,
             vault=masked.vault,
         )
 

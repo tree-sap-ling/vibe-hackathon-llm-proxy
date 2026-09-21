@@ -1,5 +1,10 @@
 from app.pii.masking import MaskingResult, MaskingVault, mask_text
 from app.pii.models import PiiEntity, PiiType
+from app.pii.observability import (
+    PiiAuditEvent,
+    build_pii_audit_event,
+    log_pii_audit_event,
+)
 from app.pii.policy import (
     ConsumerDisabledError,
     ConsumerPolicy,
@@ -20,6 +25,7 @@ __all__ = [
     "DetectorRegistry",
     "MaskingResult",
     "MaskingVault",
+    "PiiAuditEvent",
     "PiiEntity",
     "PiiProcessor",
     "PiiType",
@@ -28,6 +34,8 @@ __all__ = [
     "PreparedRequest",
     "UnknownConsumerError",
     "build_default_registry",
+    "build_pii_audit_event",
     "build_processor",
+    "log_pii_audit_event",
     "mask_text",
 ]
