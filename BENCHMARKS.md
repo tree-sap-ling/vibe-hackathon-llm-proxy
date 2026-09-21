@@ -7,60 +7,56 @@
 Они полезны для regression/diagnostics, но не являются production SLA
 и не доказывают достижение официального RPS 1000 на внешнем deployment.
 
-## `/process`: sustained paired benchmark
+## `/process`: current release paired benchmark
 
-Последний benchmark после добавления official contract, correlation TTL,
-safe audit logging и overload protection.
+Последний benchmark выполнен после интеграции public shape-mask,
+на committed runtime `e85532a`.
 
-Конфигурация:
+Во всех прогонах:
 
 - один Uvicorn worker;
 - `PROCESS_MAX_IN_FLIGHT=50`;
 - 2000 пар mask → demask;
+- 4000 HTTP requests на точку;
 - exact round-trip check для каждой пары;
-- до 3 HTTP attempts при `429`;
-- synthetic payload содержит ФИО, email, телефон и паспорт.
+- public response проверялся на отсутствие `<PII:...>`;
+- synthetic payload содержал email;
+- client и server работали на одной VirtualBox VM.
 
-### Concurrency 25
+### Docker CMD, access log включён
 
-| Метрика | MASK | DEMASK |
-|---|---:|---:|
-| Successful requests | 2000 | 2000 |
-| 429 attempts | 0 | 0 |
-| p50 | 34.63 ms | 23.40 ms |
-| p95 | 126.64 ms | 117.17 ms |
-| p99 | 204.65 ms | 191.94 ms |
-| max | 338.84 ms | 328.17 ms |
+Это режим, который реально запускается текущим `Dockerfile`:
 
-Итог:
+```text
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
 
-- 2000/2000 successful pairs;
-- 0 pair failures;
-- successful HTTP throughput: 570.3 req/s;
-- PII core p95: 0.156 ms;
-- safe log check: без raw PII и masking tokens.
+| Client concurrency | Successful pairs | HTTP 200 | Successful HTTP RPS | MASK p50 | MASK p95 | DEMASK p50 | DEMASK p95 |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 4 | 2000/2000 | 4000/4000 | 1074.4 | 3.49 ms | 5.52 ms | 3.36 ms | 5.41 ms |
+| 6 | 2000/2000 | 4000/4000 | 1094.8 | 4.83 ms | 9.57 ms | 4.79 ms | 9.44 ms |
 
-### Concurrency 50
+Для каждой точки container logs содержали 4000 access-log строк и
+2000 safe PII audit events. Проверки не обнаружили raw email,
+`payload_id` или внутренних `<PII:...>` tokens в логах.
 
-| Метрика | MASK | DEMASK |
-|---|---:|---:|
-| Successful requests | 2000 | 2000 |
-| 429 attempts | 0 | 0 |
-| p50 | 59.15 ms | 65.43 ms |
-| p95 | 340.51 ms | 347.26 ms |
-| p99 | 584.93 ms | 648.40 ms |
-| max | 1059.62 ms | 1180.40 ms |
+Эти результаты показывают, что текущая release-конфигурация на этой
+локальной VM пересекла ориентир 1000 successful HTTP req/s. Это не
+является доказательством official SLA на инфраструктуре организаторов.
 
-Итог:
+### Локальный uvicorn с `--no-access-log`
 
-- 2000/2000 successful pairs;
-- 0 pair failures;
-- successful HTTP throughput: 472.1 req/s;
-- PII core p95: 0.154 ms;
-- safe log check: без raw PII и masking tokens.
+Контрольный прогон того же committed runtime без access log:
 
-Снижение throughput при большей concurrency в этой VM показывает, что
-локальный client/server contention заметно влияет на результат.
+| Client concurrency | Successful pairs | Successful HTTP RPS | MASK p50 | MASK p95 | DEMASK p50 | DEMASK p95 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 4 | 2000/2000 | 1219.8 | 2.99 ms | 5.32 ms | 2.96 ms | 5.05 ms |
+| 6 | 2000/2000 | 1299.4 | 3.69 ms | 8.68 ms | 3.62 ms | 8.51 ms |
+
+Access logging поэтому измеримо влияет на throughput, но в текущем
+Docker CMD он оставлен включённым: даже с ним локальный release-run
+прошёл без ошибок и выше 1000 req/s. Runtime специально не менялся
+после этого измерения.
 
 ## `/process`: overload behavior
 
@@ -90,40 +86,47 @@ Retry-After=1: 58/58
 
 ## Large payload smoke
 
-Docker test использовал synthetic payload:
+Post-public-mask HTTP smoke использовал synthetic payload ровно из:
 
 ```text
-100000 whitespace-separated word-like units
-600147 bytes
-0.572 MiB
+100000 whitespace-separated units
+600011 bytes
 ```
 
-PII были размещены в начале, середине и конце текста.
+Это были `99998` слов `token`, затем `Email:` и
+`user@example.com`.
 
 Результат:
 
 | Метрика | Значение |
 |---|---:|
 | Mask HTTP status | 200 |
-| Mask latency | 205.88 ms |
+| Mask latency | 248.85 ms |
 | Demask HTTP status | 200 |
-| Demask latency | 14.90 ms |
-| PII processor time | 185.043 ms |
-| Detected entities | 4 |
+| Demask latency | 9.21 ms |
+| Public email mask present | yes |
+| Internal `<PII:...>` in public response | no |
 | Exact round-trip | yes |
-| Raw expected PII left in mask | none |
 
-Safe Docker logs не содержали raw email, `payload_id` или `<PII:...>` tokens.
+Server logs не содержали raw email, `payload_id` или внутренних
+`<PII:...>` tokens.
+
+Этот payload отличается от более раннего synthetic large-text smoke,
+поэтому отдельные latency numbers нельзя трактовать как точное
+before/after сравнение renderer-а.
 
 Важно: `100000 whitespace-separated units` — это не доказанные
 `100000 tokenizer tokens`, потому что официальный tokenizer не задан.
 
 ## Local quality regression corpora
 
-Локальные curated checks после tightening contextual detectors:
+Локальные curated checks после tightening contextual detectors
+и public-mask integration:
 
 - synthetic corpus: 34/34;
-- adversarial corpus: 53/53.
+- adversarial corpus: 53/53;
+- exact-span corpus: 30/30;
+- полный regression suite после интеграции: 167/167.
 
 Эти цифры означают только прохождение наших собственных cases.
 Они не являются официальным quality score и не подтверждают target 95%

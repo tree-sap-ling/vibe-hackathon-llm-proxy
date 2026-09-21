@@ -42,13 +42,19 @@ CorrelationStore lookup by payload_id
   |      |
   |      +--> detector registry
   |      +--> overlap resolution
-  |      +--> reversible MaskingVault
+  |      +--> internal token-mask + reversible MaskingVault
+  |      +--> exact PiiEntity spans
+  |      |
+  |      v
+  |   render_public_mask(original, prepared.entities)
   |      |
   |      v
   |   save correlation record
+  |      +--> public masked_payload
+  |      +--> PreparedRequest with internal token-mask/vault
   |      |
   |      v
-  |   return mask
+  |   return public shape-mask
   |
   +--> known payload_id + original retry
   |      |
@@ -74,13 +80,17 @@ CorrelationStore lookup by payload_id
 `PiiProcessor` получает policy для system/consumer и вызывает registry
 детекторов только для разрешённых типов ПД.
 
-Результат подготовки запроса содержит:
+Результат `PiiProcessor.prepare_request()` содержит:
 
-- замаскированный текст;
+- внутреннюю technical token-mask;
 - набор обнаруженных типов ПД;
+- immutable tuple точных `PiiEntity` spans;
 - количество сущностей;
 - время локальной PII-обработки;
 - request-local vault для обратного восстановления.
+
+`PiiEntity` хранит тип, `start`, `end` и confidence, но не копирует
+исходное PII-значение в отдельное поле.
 
 Сами исходные значения ПД не входят в safe observability structures.
 
@@ -105,24 +115,57 @@ Registry поддерживает отдельные типы ПД из зада
 где применимо, checksum validation. Overlap resolution выбирает одну
 согласованную систему spans перед маскированием.
 
-## Reversible masking
+## Dual masking: internal tokens и public shape-mask
 
-`MaskingVault` создаётся отдельно для каждого нового `payload_id`.
+В runtime используются два разных представления маски.
 
-Маски имеют технический вид:
+### Internal technical mask
+
+`PiiProcessor.prepare_request()` по-прежнему создаёт request-local
+`MaskingVault` и внутренние tokens вида:
 
 ```text
 <PII:email:1:request_namespace>
 ```
 
-Namespace случайный и изолирует токены разных запросов.
+Namespace случайный и изолирует значения разных запросов. Эти tokens
+нужны только внутри процесса: vault умеет по ним точно восстановить
+исходный текст.
 
-Demask выполняется только по токенам, известным конкретному vault.
-Неизвестный или чужой token не раскрывает данные.
+### Public mask для `/process`
 
-Формат токена является текущей реализацией. Официальный скрытый scorer
-сравнивает маскирование с эталоном, поэтому локальные тесты не считаются
-официальным quality score.
+После единственного detector pass `render_public_mask()` использует
+`prepared.entities` и строит внешний ответ checker-у.
+
+Для опубликованного примера формат совпадает буквально:
+
+```text
+Клиент Иванов Иван Иванович, паспорт 4509 123456
+→
+Клиент И. И. И., паспорт 45** ****56
+```
+
+Для ФИО применяется форма с инициалами, для российского паспорта
+сохраняются первые две и последние две цифры. Для остальных типов
+текущий renderer использует консервативную shape-preserving эвристику:
+буквы и цифры внутри найденного span заменяются на `*`, а разделители
+и окружающий текст сохраняются.
+
+Последнее правило является нашей реализационной эвристикой: организаторы
+не опубликовали точные replacement strings для всех скрытых cases.
+Поэтому оно не считается доказательством соответствия hidden reference.
+
+Public response `/process` не содержит внутренних `<PII:...>` tokens.
+
+### Demask
+
+`CorrelationRecord.masked_payload` хранит именно public mask, чтобы
+второй запрос checker-а распознавался по тому же `payload_id`.
+Для восстановления original endpoint не пытается разобрать `*`-маску:
+он использует сохранённые `PreparedRequest.masked_text` и request-local
+vault, то есть exact demask остаётся обратимым.
+
+Неизвестный или чужой internal token не раскрывает данные.
 
 ## Correlation store и идемпотентность
 
@@ -130,9 +173,10 @@ Demask выполняется только по токенам, известны
 
 Поведение:
 
-- первый новый `payload_id` создаёт mask record;
-- retry исходного payload возвращает ту же mask;
-- issued mask с тем же `payload_id` возвращает original;
+- первый новый `payload_id` создаёт record с public `masked_payload`
+  и внутренним `PreparedRequest`/vault;
+- retry исходного payload возвращает ту же public mask;
+- issued public mask с тем же `payload_id` возвращает exact original;
 - retry demask снова возвращает original;
 - другой payload для существующего `payload_id` считается конфликтом.
 
