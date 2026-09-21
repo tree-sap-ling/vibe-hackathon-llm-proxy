@@ -1,389 +1,267 @@
-# Архитектура LLM Proxy
+# Архитектура PII Protection Service
 
 ## Назначение
 
-Проект создаёт минимальный, но отказоустойчивый фундамент
-высоконагруженного LLM proxy.
+Основной конкурсный path — `POST /process`.
 
-Основные цели:
+Сервис принимает строку и `payload_id`, обнаруживает персональные данные,
+возвращает маску, а при повторном запросе с тем же `payload_id` и ранее
+выданной маской восстанавливает исходную строку.
 
-- низкая дополнительная latency;
-- контролируемое поведение при перегрузке;
-- отказоустойчивость upstream provider;
-- безопасный streaming;
-- возможность горизонтального масштабирования;
-- отсутствие лишних компонентов в hot path;
-- быстрая адаптация под официальный контракт хакатона.
+Ключевые свойства текущей реализации:
 
-## Текущая архитектура
+- обработка `/process` полностью локальная, без вызова внешней LLM;
+- детектирование ПД построено как расширяемый registry детекторов;
+- маскирование обратимое и изолировано между запросами;
+- корреляция mask → demask идемпотентна по `payload_id`;
+- исходные значения ПД не пишутся в audit logs и technical metrics;
+- overload для `/process` возвращает `HTTP 429` + `Retry-After: 1`;
+- correlation state хранится в памяти процесса, поэтому конкурсный runtime
+  запускается одним HTTP worker.
 
-```text
-                         +-------------------+
-                         |      Client       |
-                         +---------+---------+
-                                   |
-                                   v
-                         +-------------------+
-                         |   FastAPI Proxy   |
-                         +---------+---------+
-                                   |
-                    +--------------+--------------+
-                    |                             |
-                    v                             v
-          +------------------+          +------------------+
-          | Concurrency Gate |          | Runtime Metrics  |
-          +------------------+          +------------------+
-                    |
-                    v
-          +--------------------+
-          | Provider Routing   |
-          +---------+----------+
-                    |
-           +--------+--------+
-           |                 |
-           v                 v
-    +-------------+    +-------------+
-    |   Primary   |    |  Fallback   |
-    |   Provider  |    |   Provider  |
-    +-------------+    +-------------+
-```
-
-Оба provider имеют независимые circuit breaker.
-
-## Обычный запрос
+## Конкурсный request path
 
 ```text
-Client request
-      |
-      v
-Concurrency Gate
-      |
-      +--> limit exceeded -> HTTP 503
-      |
-      v
-Routing deadline
-      |
-      v
-Primary provider
-      |
-      +--> success / 4xx -> return response
-      |
-      +--> network error / timeout / 5xx
-                    |
-                    v
-              Fallback provider
-                    |
-                    v
-               Client response
+Client
+  |
+  v
+POST /process
+  |
+  v
+PROCESS_MAX_IN_FLIGHT gate
+  |
+  +--> limit exceeded -> HTTP 429 + Retry-After: 1
+  |
+  v
+CorrelationStore lookup by payload_id
+  |
+  +--> new payload_id
+  |      |
+  |      v
+  |   PiiProcessor.prepare_request()
+  |      |
+  |      +--> detector registry
+  |      +--> overlap resolution
+  |      +--> reversible MaskingVault
+  |      |
+  |      v
+  |   save correlation record
+  |      |
+  |      v
+  |   return mask
+  |
+  +--> known payload_id + original retry
+  |      |
+  |      v
+  |   return exact same mask
+  |
+  +--> known payload_id + issued mask
+  |      |
+  |      v
+  |   demask through stored vault
+  |      |
+  |      v
+  |   return exact original
+  |
+  +--> conflicting payload
+         |
+         v
+      HTTP 409
 ```
 
-`4xx` не вызывает fallback, потому что обычно означает ошибку клиентского
-запроса, а не сбой provider.
+## PII pipeline
 
-## Streaming request path
+`PiiProcessor` получает policy для system/consumer и вызывает registry
+детекторов только для разрешённых типов ПД.
 
-До первого chunk:
+Результат подготовки запроса содержит:
+
+- замаскированный текст;
+- набор обнаруженных типов ПД;
+- количество сущностей;
+- время локальной PII-обработки;
+- request-local vault для обратного восстановления.
+
+Сами исходные значения ПД не входят в safe observability structures.
+
+## Детекторы
+
+Registry поддерживает отдельные типы ПД из задания, включая:
+
+- ФИО;
+- дату и место рождения;
+- паспорт РФ, орган выдачи, код подразделения и дату выдачи;
+- гражданство;
+- водительское удостоверение;
+- адрес и его компоненты;
+- email и телефон;
+- ИНН;
+- банковскую карту;
+- CVV/CVC;
+- PIN;
+- имя держателя карты.
+
+Для структурированных значений используются контекстные правила и,
+где применимо, checksum validation. Overlap resolution выбирает одну
+согласованную систему spans перед маскированием.
+
+## Reversible masking
+
+`MaskingVault` создаётся отдельно для каждого нового `payload_id`.
+
+Маски имеют технический вид:
 
 ```text
-primary send()
-      |
-      +--> connection error
-      |         |
-      |         v
-      |      fallback
-      |
-      v
-HTTP response
-      |
-      v
-wait first chunk
-      |
-      +--> read error / timeout
-      |         |
-      |         v
-      |      fallback
-      |
-      v
-first chunk received
+<PII:email:1:request_namespace>
 ```
 
-После первого chunk:
+Namespace случайный и изолирует токены разных запросов.
+
+Demask выполняется только по токенам, известным конкретному vault.
+Неизвестный или чужой token не раскрывает данные.
+
+Формат токена является текущей реализацией. Официальный скрытый scorer
+сравнивает маскирование с эталоном, поэтому локальные тесты не считаются
+официальным quality score.
+
+## Correlation store и идемпотентность
+
+`InMemoryCorrelationStore` хранит состояние пары запросов для `/process`.
+
+Поведение:
+
+- первый новый `payload_id` создаёт mask record;
+- retry исходного payload возвращает ту же mask;
+- issued mask с тем же `payload_id` возвращает original;
+- retry demask снова возвращает original;
+- другой payload для существующего `payload_id` считается конфликтом.
+
+TTL текущей реализации:
+
+- pending record: 15 минут;
+- completed record: 120 секунд;
+- периодический полный cleanup: 5 секунд.
+
+Короткий TTL completed-record сохраняет окно для retry и ограничивает рост памяти.
+
+## Overload protection
+
+Для `/process` используется отдельный `ConcurrencyGate`.
+
+Переменная:
 
 ```text
-first chunk
-    |
-    v
-client started receiving response
-    |
-    v
-provider is fixed
-    |
-    +--> later stream error
-              |
-              v
-      record failure and finish stream
+PROCESS_MAX_IN_FLIGHT=50
 ```
 
-После начала клиентского stream автоматическое переключение provider
-запрещено. Иначе клиент мог бы получить начало ответа от Provider A
-и продолжение ответа от Provider B.
-
-## Routing time budget
-
-Один клиентский запрос не должен получать отдельный полный timeout
-на каждого provider.
-
-Используется общий deadline:
+Если slot недоступен, endpoint отвечает:
 
 ```text
-ROUTING_TIMEOUT_SECONDS = 5
-
-0s                         5s
-|---------------------------|
-      primary
-|------------|
-             fallback
-             |-------------|
+HTTP 429 Too Many Requests
+Retry-After: 1
 ```
 
-Fallback получает только оставшуюся часть общего budget.
+После успешного acquire request task делает один cooperative event-loop yield,
+чтобы одновременно готовые requests могли увидеть занятые admission slots.
+Освобождение slot защищено `try/finally`.
 
-Для non-stream запросов budget действует до получения upstream response.
-Для streaming запросов budget действует до первого chunk.
+Этот gate ограничивает задачи, уже дошедшие до application handler.
+Он не является заменой TCP/server-level admission control.
 
-После первого chunk routing завершён, поэтому дальнейшая длительность
-LLM generation этим deadline не ограничивается.
+## Safe observability
 
-## Bounded concurrency
+PII audit event содержит только:
 
-Proxy не создаёт бесконечную внутреннюю очередь.
+- случайный internal `request_id`;
+- `system_id`;
+- обнаруженные типы ПД;
+- количество сущностей;
+- processing latency;
+- флаг demask policy.
 
-`MAX_IN_FLIGHT` задаёт максимальное число запросов в обработке.
+Audit log не должен содержать:
 
-Если все слоты заняты, новый запрос быстро получает
-`HTTP 503 Proxy overloaded`.
+- исходный payload;
+- значения ПД;
+- выданную mask;
+- `payload_id`.
 
-Это позволяет сбрасывать перегрузку вместо роста latency, памяти
-и количества ожидающих coroutine.
+`GET /stats` публикует только агрегированные PII metrics:
+число обработанных запросов, requests with PII, число сущностей,
+latency percentiles и counters по типам ПД.
 
-## Circuit breaker
+## Single-process deployment
 
-Для каждого provider создаётся независимый circuit breaker.
+Correlation store находится в памяти Python-процесса.
 
-```text
-             failures >= threshold
-closed -----------------------------> open
-  ^                                    |
-  |                                    |
-  | success                            | recovery timeout
-  |                                    v
-  +------------------------------- half_open
-```
+Поэтому текущий конкурсный deployment должен использовать один Uvicorn worker.
+Несколько независимых workers не разделяли бы correlation state и могли бы
+разнести mask и demask одного `payload_id` по разным процессам.
 
-Основные параметры:
-
-```text
-CIRCUIT_FAILURE_THRESHOLD
-CIRCUIT_RECOVERY_TIMEOUT_SECONDS
-```
-
-Это позволяет перестать отправлять запросы к явно неработающему provider
-и не тратить routing budget на заведомо неуспешные попытки.
-
-## Provider runtime
-
-Runtime-состояние provider:
-
-```text
-ProviderRuntime
-    |
-    +--> ProviderConfig
-    |
-    +--> CircuitBreaker
-```
-
-Primary и fallback не разделяют circuit state.
-
-## HTTP client
-
-В lifespan приложения создаётся один общий `httpx.AsyncClient`.
-
-Он переиспользуется между запросами, что позволяет переиспользовать
-HTTP connections вместо создания нового client на каждый LLM request.
-
-## Health checks
-
-### `/healthz`
-
-Проверяет только жизнь самого proxy и не зависит от upstream.
-
-### `/readyz`
-
-Проверяет настроенные upstream provider.
-
-Proxy считается ready, если доступен хотя бы один provider.
-Это позволяет продолжать принимать трафик при отказе primary,
-если fallback остаётся работоспособным.
-
-## Метрики
-
-`GET /stats` публикует локальное runtime-состояние процесса.
-
-Основные метрики:
-
-```text
-in_flight
-max_in_flight
-total_requests
-completed_requests
-overload_rejections
-circuit_open_rejections
-upstream_errors
-upstream_timeouts
-```
-
-Также публикуются отдельные circuit snapshots:
-
-```text
-providers.primary.circuit
-providers.fallback.circuit
-```
-
-Метрики сейчас process-local.
-
-## Масштабирование
-
-Proxy старается оставаться stateless относительно пользовательских данных.
-
-Базовый вариант горизонтального масштабирования:
-
-```text
-                   +----------------+
-Clients ---------->| Load Balancer  |
-                   +--------+-------+
-                            |
-             +--------------+--------------+
-             |              |              |
-             v              v              v
-        +---------+     +---------+     +---------+
-        | Proxy 1 |     | Proxy 2 |     | Proxy 3 |
-        +----+----+     +----+----+     +----+----+
-             |               |               |
-             +---------------+---------------+
-                             |
-                             v
-                     LLM Providers
-```
-
-Текущие concurrency counters, statistics и circuit breaker state
-локальны для каждой replica.
-
-Shared state стоит добавлять только если официальный контракт требует,
-например:
-
-- глобальный rate limit;
-- общий circuit state;
-- распределённую очередь;
-- глобальные quotas.
-
-В таком случае может быть оправдан Redis.
+Горизонтальное масштабирование возможно только после добавления shared
+correlation storage и стратегии маршрутизации/консистентности. Сейчас это
+намеренно не входит в hot path.
 
 ## Docker
 
-Production image основан на `python:3.12-slim`.
+Docker image основан на `python:3.12-slim`.
 
-В image не копируются:
+Приложение запускается непривилегированным пользователем:
 
 ```text
-.git
-.venv
-.env
-tests
-scripts
-mock_provider
+USER app
 ```
 
-Процесс запускается от непривилегированного пользователя `app`.
+Container command:
 
-Проверен запуск proxy и mock-provider в отдельных контейнерах
-через отдельную Docker network.
+```text
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
 
-Проверены:
+`--workers` намеренно не задаётся: Uvicorn запускает один worker.
 
-- Docker DNS;
-- readiness через fallback;
-- обычный completion через fallback;
-- streaming completion через fallback;
-- per-provider circuit metrics.
+## Health и runtime endpoints
 
-## Безопасность
+### `GET /healthz`
 
-Основные правила:
+Liveness самого приложения.
 
-- реальные API keys не хранятся в Git;
-- `.env` игнорируется;
-- `.env.example` содержит только шаблон;
-- credentials передаются через environment;
-- container не запускается от root;
-- debug/test artifacts не входят в production image.
+### `GET /readyz`
 
-## Нагрузочное поведение
+Readiness старого LLM-proxy subsystem относительно настроенных upstream providers.
+Для конкурсного `/process` внешний provider не требуется.
 
-Локальные benchmark-результаты находятся в `BENCHMARKS.md`.
+### `GET /stats`
 
-Проект измеряет:
+Process-local technical metrics без исходных PII values.
 
-- throughput;
-- success rate;
-- rejection rate;
-- p50;
-- p95;
-- p99;
-- streaming TTFT.
+## LLM proxy subsystem
 
-Локальные benchmark нельзя напрямую интерпретировать как production SLA.
-Они нужны для проверки поведения архитектуры и регрессий.
+В проекте сохранён подготовленный ранее `/v1/chat/completions` foundation.
 
-## Что намеренно не находится в hot path
+Он включает:
 
-Без требования задачи не добавляются:
+- shared `httpx.AsyncClient`;
+- primary/fallback provider routing;
+- circuit breaker на каждого provider;
+- общий routing time budget;
+- bounded concurrency через `MAX_IN_FLIGHT`;
+- SSE streaming;
+- fallback только до первого видимого client chunk.
 
-- Kubernetes;
-- Kafka;
-- PostgreSQL;
-- vector database;
-- agent framework;
-- semantic cache;
-- LLM router.
+Для LLM proxy overload используется `HTTP 503`.
+Этот subsystem не участвует в официальной логике mask/demask `/process`.
 
-Каждый дополнительный компонент увеличивает latency, число failure mode
-и время, необходимое для адаптации решения на хакатоне.
+## Что остаётся неизвестным до официального прогона
 
-## Неизвестные параметры официального задания
+Опубликованный контракт и правила нагрузки известны, но организаторы не раскрывают:
 
-После открытия задания нужно подтвердить:
+- скрытый эталонный датасет;
+- точные reference spans для всех строк;
+- точные reference replacement strings за пределами опубликованных примеров;
+- внутреннюю реализацию scorer-а сверх описанной span-based normalized
+  Levenshtein metric.
 
-- точный request/response contract;
-- обязательные endpoint;
-- startup command;
-- требования к Docker или Compose;
-- порт;
-- internet access;
-- предоставляемый LLM endpoint;
-- credentials;
-- SLA;
-- TTFT или full-response latency;
-- p95/p99 требования;
-- ожидаемый RPS;
-- concurrency;
-- streaming requirements;
-- CPU limits;
-- RAM limits;
-- timeout rules;
-- failure scenarios;
-- требования к persistence;
-- требования к shared state;
-- cost/token limits.
-
-До получения этих данных архитектура не должна искусственно
-усложняться предположениями.
+Поэтому нельзя утверждать, что локальная точность равна официальной
+или что достигнут официальный target 95%, пока решение не измерено
+проверяющей системой организаторов.
