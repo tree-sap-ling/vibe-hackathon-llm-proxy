@@ -22,6 +22,7 @@ from app.pii import (
     build_processor,
     log_pii_audit_event,
 )
+from app.pii.public_masking import render_public_mask
 from app.stats import ProxyStats
 from app.stream_routing import route_stream_request
 from app.streaming import relay_stream
@@ -307,7 +308,7 @@ async def _process_impl(
         return ProcessResponse(
             result=processor.finalize_response(
                 record.prepared,
-                body.payload,
+                record.prepared.masked_text,
             )
         )
 
@@ -316,10 +317,16 @@ async def _process_impl(
         body.payload,
     )
 
+    public_mask = render_public_mask(
+        body.payload,
+        list(prepared.entities),
+    )
+
     record, created = await store.put_if_absent(
         payload_id=body.payload_id,
         original_payload=body.payload,
         prepared=prepared,
+        masked_payload=public_mask,
     )
 
     if created:
@@ -361,7 +368,7 @@ async def _process_impl(
     return ProcessResponse(
         result=processor.finalize_response(
             record.prepared,
-            body.payload,
+            record.prepared.masked_text,
         )
     )
 
