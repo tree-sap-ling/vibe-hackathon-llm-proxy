@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from time import perf_counter
 
 from app.pii.masking import MaskingVault, mask_text
-from app.pii.models import PiiType
+from app.pii.models import PiiEntity, PiiType
 from app.pii.policy import ConsumerPolicy, PolicyRegistry
 from app.pii.registry import DetectorRegistry, build_default_registry
 
@@ -12,6 +12,7 @@ class PreparedRequest:
     system_id: str
     masked_text: str
     detected_types: tuple[PiiType, ...]
+    entities: tuple[PiiEntity, ...]
     entity_count: int
     demask_enabled: bool
     processing_ms: float
@@ -60,6 +61,7 @@ class PiiProcessor:
             system_id=policy.system_id,
             masked_text=masked.text,
             detected_types=masked.detected_types,
+            entities=tuple(entities),
             entity_count=masked.entity_count,
             demask_enabled=policy.demask_enabled,
             processing_ms=processing_ms,
