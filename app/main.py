@@ -1,3 +1,5 @@
+import logging
+from uuid import uuid4
 import asyncio
 import os
 from contextlib import asynccontextmanager
@@ -16,7 +18,9 @@ from app.pii import (
     InMemoryCorrelationStore,
     PiiMetrics,
     PiiType,
+    build_pii_audit_event,
     build_processor,
+    log_pii_audit_event,
 )
 from app.stats import ProxyStats
 from app.stream_routing import route_stream_request
@@ -107,6 +111,26 @@ def get_circuit_recovery_timeout():
         value = 5.0
 
     return max(0.0, value)
+
+
+pii_audit_logger = logging.getLogger(
+    "app.pii.audit"
+)
+pii_audit_logger.setLevel(logging.INFO)
+pii_audit_logger.propagate = False
+
+if not pii_audit_logger.handlers:
+    pii_audit_handler = logging.StreamHandler()
+    pii_audit_handler.setLevel(logging.INFO)
+    pii_audit_handler.setFormatter(
+        logging.Formatter(
+            "%(levelname)s: %(message)s "
+            "pii_audit=%(pii_audit)s"
+        )
+    )
+    pii_audit_logger.addHandler(
+        pii_audit_handler
+    )
 
 
 PROCESS_SYSTEM_ID = "autocheck"
@@ -287,6 +311,15 @@ async def process(
     if created:
         await request.app.state.pii_metrics.record(
             prepared
+        )
+
+        audit_event = build_pii_audit_event(
+            request_id=uuid4().hex,
+            prepared=prepared,
+        )
+        log_pii_audit_event(
+            pii_audit_logger,
+            audit_event,
         )
 
         return ProcessResponse(

@@ -289,5 +289,79 @@ class ProcessContractTests(unittest.TestCase):
         )
 
 
+    def test_new_mask_emits_one_safe_audit_event(self):
+        original = "Email: audit.secret@example.com"
+
+        with patch.object(
+            app_module,
+            "log_pii_audit_event",
+        ) as log_mock:
+            with self.make_client():
+                with TestClient(
+                    app_module.app
+                ) as client:
+                    first = client.post(
+                        "/process",
+                        json={
+                            "payload": original,
+                            "payload_id": "audit-1",
+                        },
+                    )
+
+                    masked = first.json()["result"]
+
+                    retry = client.post(
+                        "/process",
+                        json={
+                            "payload": original,
+                            "payload_id": "audit-1",
+                        },
+                    )
+
+                    demask = client.post(
+                        "/process",
+                        json={
+                            "payload": masked,
+                            "payload_id": "audit-1",
+                        },
+                    )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(retry.status_code, 200)
+        self.assertEqual(demask.status_code, 200)
+
+        self.assertEqual(
+            log_mock.call_count,
+            1,
+        )
+
+        event = log_mock.call_args.args[1]
+        event_dict = event.as_dict()
+
+        self.assertEqual(
+            event_dict["detected_types"],
+            ["email"],
+        )
+        self.assertEqual(
+            event_dict["entity_count"],
+            1,
+        )
+
+        serialized = repr(event_dict)
+
+        self.assertNotIn(
+            "audit.secret@example.com",
+            serialized,
+        )
+        self.assertNotIn(
+            masked,
+            serialized,
+        )
+        self.assertNotIn(
+            "audit-1",
+            serialized,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
