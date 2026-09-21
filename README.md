@@ -1,14 +1,15 @@
-# Vibe Hackathon — LLM Proxy
+# Vibe Hackathon — PII Protection Service
 
-Подготовительный проект высоконагруженного прокси для LLM.
+Сервис для обнаружения, маскирования и обратного восстановления
+персональных данных по официальному контракту хакатона.
 
-Цель — иметь небольшой, воспроизводимый и легко адаптируемый сервис,
-который после публикации официального задания можно быстро привести
-к требуемому API-контракту и SLA.
+Основной конкурсный endpoint — `POST /process`.
+Первый запрос с новым `payload_id` маскирует строку и сохраняет
+корреляцию, второй запрос с тем же `payload_id` восстанавливает
+исходную строку.
 
-> Точный контракт хакатона и правила автопроверки пока неизвестны.
-> Текущая реализация — технический фундамент, а не предположение
-> о финальном задании.
+Проект также сохраняет подготовленный ранее LLM-proxy foundation:
+асинхронный routing, fallback, circuit breaker, streaming и метрики.
 
 ## Что уже реализовано
 
@@ -70,6 +71,38 @@ primary
 а продолжение — от другого.
 
 ## Endpoint-ы
+
+### `POST /process`
+
+Официальный endpoint для автопроверки маскирования/демаскирования.
+
+Request:
+
+```json
+{
+  "payload": "Клиент Иванов Иван Иванович, паспорт 4509 123456",
+  "payload_id": "item-1"
+}
+```
+
+Response:
+
+```json
+{
+  "result": "замаскированная строка"
+}
+```
+
+Поведение:
+
+- новый `payload_id`: `payload` считается исходной строкой и маскируется;
+- повтор исходной строки с тем же `payload_id`: возвращается та же маска;
+- ранее возвращённая маска с тем же `payload_id`: восстанавливается исходная строка;
+- конфликтующее содержимое для существующего `payload_id`: `HTTP 409`;
+- при перегрузке endpoint может вернуть `HTTP 429` с `Retry-After: 1`.
+
+Корреляционное состояние хранится в памяти процесса, поэтому конкурсный
+`/process` запускается одним HTTP worker.
 
 ### `POST /v1/chat/completions`
 
@@ -186,7 +219,8 @@ curl -N \
 | `UPSTREAM_API_KEY` | API key primary provider |
 | `FALLBACK_UPSTREAM_BASE_URL` | URL fallback provider |
 | `FALLBACK_UPSTREAM_API_KEY` | API key fallback provider |
-| `MAX_IN_FLIGHT` | Максимальное число одновременно обрабатываемых запросов |
+| `MAX_IN_FLIGHT` | Максимальное число одновременно обрабатываемых LLM proxy запросов |
+| `PROCESS_MAX_IN_FLIGHT` | Лимит одновременно допущенных запросов `POST /process` |
 | `ROUTING_TIMEOUT_SECONDS` | Общий time budget на выбор provider |
 | `CIRCUIT_FAILURE_THRESHOLD` | Число ошибок до открытия circuit breaker |
 | `CIRCUIT_RECOVERY_TIMEOUT_SECONDS` | Время до half-open probe |
@@ -217,10 +251,13 @@ closed -> open -> half_open -> closed
 
 ## Overload protection
 
-`MAX_IN_FLIGHT` ограничивает число запросов, находящихся в proxy одновременно.
+Для LLM proxy `MAX_IN_FLIGHT` ограничивает число одновременно
+обрабатываемых запросов; при переполнении используется `HTTP 503`.
 
-Если лимит занят, новый запрос быстро получает `HTTP 503 Proxy overloaded`.
-Это защищает latency и память процесса от неконтролируемого роста очереди.
+Для официального `POST /process` используется отдельный
+`PROCESS_MAX_IN_FLIGHT` (по умолчанию `50`). При переполнении
+endpoint возвращает `HTTP 429 Too Many Requests` с `Retry-After: 1`,
+что соответствует контракту автопроверки.
 
 ## Тесты
 
@@ -259,6 +296,32 @@ python scripts/load_test.py --help
 ```bash
 python scripts/stream_probe.py --help
 ```
+
+## Быстрый запуск конкурсного `/process`
+
+Минимальный локальный запуск в Docker:
+
+```bash
+docker build -t pii-proxy:local .
+docker run --rm -p 8000:8000 pii-proxy:local
+```
+
+Проверка:
+
+```bash
+curl -X POST http://127.0.0.1:8000/process \
+  -H 'Content-Type: application/json' \
+  -d '{"payload":"Email: test@example.com","payload_id":"selfcheck-1"}'
+```
+
+Повторите второй запрос с тем же `payload_id`, передав в `payload`
+строку `result` из первого ответа — сервис должен вернуть исходную строку.
+
+## Качество и производительность
+
+Локальные synthetic/adversarial тесты и benchmark-и используются для
+регрессии и диагностики. Они не являются официальным score: итоговая
+точность определяется скрытым эталонным датасетом организаторов.
 
 ## Docker
 
