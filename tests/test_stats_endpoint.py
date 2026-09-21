@@ -83,6 +83,62 @@ class StatsEndpointTests(unittest.TestCase):
         self.assertEqual(data["circuit"]["failure_count"], 0)
         self.assertEqual(data["circuit"]["failure_threshold"], 3)
 
+    def test_stats_include_zero_pii_metrics(self):
+        fake_client = FakeAsyncClient(mode="healthy")
+
+        with patch.object(
+            app_module.httpx,
+            "AsyncClient",
+            return_value=fake_client,
+        ):
+            with TestClient(app_module.app) as client:
+                response = client.get("/stats")
+
+        self.assertEqual(response.status_code, 200)
+
+        pii = response.json()["pii"]
+
+        self.assertEqual(
+            pii["processed_requests"],
+            0,
+        )
+        self.assertEqual(
+            pii["requests_with_pii"],
+            0,
+        )
+        self.assertEqual(
+            pii["detected_entities"],
+            0,
+        )
+        self.assertEqual(
+            pii["processing_ms"]["samples"],
+            0,
+        )
+        self.assertEqual(
+            pii["processing_ms"]["avg"],
+            0.0,
+        )
+        self.assertEqual(
+            pii["processing_ms"]["p50"],
+            0.0,
+        )
+        self.assertEqual(
+            pii["processing_ms"]["p95"],
+            0.0,
+        )
+        self.assertEqual(
+            pii["processing_ms"]["p99"],
+            0.0,
+        )
+        self.assertEqual(
+            pii["processing_ms"]["max"],
+            0.0,
+        )
+        self.assertEqual(
+            pii["requests_by_type"],
+            {},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

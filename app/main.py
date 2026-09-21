@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from app.non_stream_routing import route_non_stream_request
 from app.provider_runtime import build_provider_runtimes
 from app.providers import get_provider_configs
+from app.pii import PiiMetrics
 from app.stats import ProxyStats
 from app.stream_routing import route_stream_request
 from app.streaming import relay_stream
@@ -110,6 +111,7 @@ async def lifespan(app: FastAPI):
         limit=get_max_in_flight()
     )
     app.state.stats = ProxyStats()
+    app.state.pii_metrics = PiiMetrics()
     app.state.routing_timeout = get_routing_timeout()
 
     app.state.provider_runtimes = build_provider_runtimes(
@@ -144,6 +146,7 @@ async def healthz():
 async def stats(request: Request):
     counters = await request.app.state.stats.snapshot()
     concurrency = await request.app.state.concurrency_gate.snapshot()
+    pii_metrics = await request.app.state.pii_metrics.snapshot()
     circuit = await request.app.state.circuit_breaker.snapshot()
 
     providers = {}
@@ -160,6 +163,7 @@ async def stats(request: Request):
         **counters,
         "circuit": circuit,
         "providers": providers,
+        "pii": pii_metrics,
     }
 
 
