@@ -164,18 +164,102 @@ class PiiIdentityAddressTests(unittest.TestCase):
         )
 
     def test_address_of_bank_without_personal_label_is_not_detected(self):
-        text = (
-            "Отделение банка находится: "
-            "Москва, Тверская 10."
+        texts = (
+            (
+                "Отделение банка находится: "
+                "Москва, Тверская 10."
+            ),
+            (
+                "Адрес отделения банка: "
+                "г. Москва, ул. Тверская, д. 10"
+            ),
+            (
+                "Адрес музея: "
+                "г. Москва, ул. Волхонка, д. 12"
+            ),
+        )
+
+        for text in texts:
+            with self.subTest(text=text):
+                for pii_type in (
+                    PiiType.ADDRESS,
+                    PiiType.CITY,
+                    PiiType.STREET,
+                    PiiType.HOUSE,
+                    PiiType.APARTMENT,
+                    PiiType.POSTAL_CODE,
+                ):
+                    self.assertEqual(
+                        self.values_for(
+                            text,
+                            pii_type,
+                        ),
+                        [],
+                    )
+
+
+    def test_birth_place_narrative_requires_personal_context(self):
+        historical_text = (
+            "Александр Пушкин родился в Москве."
+        )
+        personal_text = (
+            "Клиент Александр Иванов "
+            "родился в Омске."
         )
 
         self.assertEqual(
             self.values_for(
-                text,
-                PiiType.ADDRESS,
+                historical_text,
+                PiiType.BIRTH_PLACE,
             ),
             [],
         )
+
+        self.assertEqual(
+            self.values_for(
+                personal_text,
+                PiiType.BIRTH_PLACE,
+            ),
+            ["Омске."],
+        )
+
+    def test_inline_components_require_personal_address_context(self):
+        text = (
+            "Адрес проживания: "
+            "г. Москва, ул. Тверская, "
+            "д. 10, кв. 5"
+        )
+
+        cases = (
+            (
+                PiiType.CITY,
+                "Москва",
+            ),
+            (
+                PiiType.STREET,
+                "Тверская",
+            ),
+            (
+                PiiType.HOUSE,
+                "10",
+            ),
+            (
+                PiiType.APARTMENT,
+                "5",
+            ),
+        )
+
+        for pii_type, expected in cases:
+            with self.subTest(
+                pii_type=pii_type
+            ):
+                self.assertEqual(
+                    self.values_for(
+                        text,
+                        pii_type,
+                    ),
+                    [expected],
+                )
 
 
 if __name__ == "__main__":

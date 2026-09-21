@@ -502,14 +502,15 @@ _FIO_PATTERN = re.compile(
 )
 
 _BIRTH_PLACE_PATTERN = re.compile(
-    r"(?:"
-    r"место\s+рождения"
-    r"|"
-    r"родил(?:ся|ась)\s+в"
-    r")"
-    r"\s*[:=-]?\s*"
-    r"(?P<value>[^;\n]{2,120}?)"
-    r"(?=(?:;\s*|\n|$))",
+    r"место\s+рождения\s*[:=-]?\s*"
+    r"(?P<value>[^;\n]{2,120}?)(?=(?:;\s*|\n|$))",
+    re.IGNORECASE,
+)
+
+_BIRTH_PLACE_PERSONAL_NARRATIVE_PATTERN = re.compile(
+    r"\b(?:я|клиент|заемщик|заёмщик|пользователь|пациент)\b"
+    r"[^;\n]{0,80}?\bродил(?:ся|ась)\s+в\s*[:=-]?\s*"
+    r"(?P<value>[^;\n]{2,120}?)(?=(?:;\s*|\n|$))",
     re.IGNORECASE,
 )
 
@@ -661,12 +662,16 @@ def detect_fio(text: str) -> Iterable[PiiEntity]:
 def detect_birth_place(
     text: str,
 ) -> Iterable[PiiEntity]:
-    yield from _detect_group_value(
-        text,
+    for pattern in (
         _BIRTH_PLACE_PATTERN,
-        PiiType.BIRTH_PLACE,
-        0.96,
-    )
+        _BIRTH_PLACE_PERSONAL_NARRATIVE_PATTERN,
+    ):
+        yield from _detect_group_value(
+            text,
+            pattern,
+            PiiType.BIRTH_PLACE,
+            0.96,
+        )
 
 
 def detect_citizenship(
@@ -716,7 +721,7 @@ def detect_country(
 def detect_postal_code(
     text: str,
 ) -> Iterable[PiiEntity]:
-    yield from _detect_group_value(
+    yield from _detect_address_component(
         text,
         _POSTAL_CODE_PATTERN,
         PiiType.POSTAL_CODE,
@@ -724,10 +729,75 @@ def detect_postal_code(
     )
 
 
+def _is_inside_personal_address(
+    text: str,
+    start: int,
+    end: int,
+) -> bool:
+    for address_match in _ADDRESS_PATTERN.finditer(text):
+        address_start, address_end = address_match.span(
+            "value"
+        )
+
+        if (
+            address_start <= start
+            and end <= address_end
+        ):
+            return True
+
+    return False
+
+
+def _component_context_allowed(
+    text: str,
+    match: re.Match[str],
+) -> bool:
+    value_start, value_end = match.span("value")
+
+    label_and_separator = text[
+        match.start():value_start
+    ]
+
+    if any(
+        separator in label_and_separator
+        for separator in (":", "=", "-")
+    ):
+        return True
+
+    return _is_inside_personal_address(
+        text,
+        value_start,
+        value_end,
+    )
+
+
+def _detect_address_component(
+    text: str,
+    pattern: re.Pattern[str],
+    pii_type: PiiType,
+    confidence: float,
+) -> Iterable[PiiEntity]:
+    for match in pattern.finditer(text):
+        if not _component_context_allowed(
+            text,
+            match,
+        ):
+            continue
+
+        start, end = match.span("value")
+
+        yield PiiEntity(
+            pii_type=pii_type,
+            start=start,
+            end=end,
+            confidence=confidence,
+        )
+
+
 def detect_city(
     text: str,
 ) -> Iterable[PiiEntity]:
-    yield from _detect_group_value(
+    yield from _detect_address_component(
         text,
         _CITY_PATTERN,
         PiiType.CITY,
@@ -738,7 +808,7 @@ def detect_city(
 def detect_street(
     text: str,
 ) -> Iterable[PiiEntity]:
-    yield from _detect_group_value(
+    yield from _detect_address_component(
         text,
         _STREET_PATTERN,
         PiiType.STREET,
@@ -749,7 +819,7 @@ def detect_street(
 def detect_house(
     text: str,
 ) -> Iterable[PiiEntity]:
-    yield from _detect_group_value(
+    yield from _detect_address_component(
         text,
         _HOUSE_PATTERN,
         PiiType.HOUSE,
@@ -760,7 +830,7 @@ def detect_house(
 def detect_apartment(
     text: str,
 ) -> Iterable[PiiEntity]:
-    yield from _detect_group_value(
+    yield from _detect_address_component(
         text,
         _APARTMENT_PATTERN,
         PiiType.APARTMENT,
