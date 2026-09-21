@@ -71,6 +71,21 @@ def get_max_in_flight():
     return max(1, value)
 
 
+
+def get_process_max_in_flight():
+    raw_value = os.getenv(
+        "PROCESS_MAX_IN_FLIGHT",
+        "50",
+    )
+
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return 50
+
+    return max(1, value)
+
+
 def get_routing_timeout():
     raw_value = os.getenv(
         "ROUTING_TIMEOUT_SECONDS",
@@ -153,6 +168,9 @@ async def lifespan(app: FastAPI):
 
     app.state.concurrency_gate = ConcurrencyGate(
         limit=get_max_in_flight()
+    )
+    app.state.process_concurrency_gate = ConcurrencyGate(
+        limit=get_process_max_in_flight()
     )
     app.state.stats = ProxyStats()
     app.state.pii_metrics = PiiMetrics()
@@ -250,11 +268,7 @@ async def readyz(request: Request):
     )
 
 
-@app.post(
-    "/process",
-    response_model=ProcessResponse,
-)
-async def process(
+async def _process_impl(
     body: ProcessRequest,
     request: Request,
 ):
@@ -350,6 +364,65 @@ async def process(
             body.payload,
         )
     )
+
+@app.post(
+    "/process",
+    response_model=ProcessResponse,
+    responses={
+        200: {
+            "description": "Успешная обработка",
+        },
+        429: {
+            "description": (
+                "Слишком много запросов. "
+                "Повторите запрос после Retry-After."
+            ),
+            "headers": {
+                "Retry-After": {
+                    "description": (
+                        "Число секунд до повторной попытки"
+                    ),
+                    "schema": {
+                        "type": "integer",
+                    },
+                }
+            },
+        },
+        "4XX": {
+            "description": "Ошибка запроса",
+        },
+        "5XX": {
+            "description": "Внутренняя ошибка сервиса",
+        },
+    },
+)
+async def process(
+    body: ProcessRequest,
+    request: Request,
+):
+    gate = request.app.state.process_concurrency_gate
+    acquired = await gate.try_acquire()
+
+    if not acquired:
+        raise HTTPException(
+            status_code=429,
+            detail="Too Many Requests",
+            headers={
+                "Retry-After": "1",
+            },
+        )
+
+    try:
+        # Give other ready request tasks one event-loop turn
+        # so they can observe occupied admission slots.
+        await asyncio.sleep(0)
+
+        return await _process_impl(
+            body,
+            request,
+        )
+    finally:
+        await gate.release()
 
 
 @app.post("/v1/chat/completions")

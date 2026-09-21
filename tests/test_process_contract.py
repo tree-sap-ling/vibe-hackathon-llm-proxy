@@ -363,5 +363,114 @@ class ProcessContractTests(unittest.TestCase):
         )
 
 
+    def test_process_openapi_declares_required_responses(self):
+        schema = app_module.app.openapi()
+        responses = schema[
+            "paths"
+        ]["/process"]["post"]["responses"]
+
+        for status_code in (
+            "200",
+            "429",
+            "4XX",
+            "5XX",
+        ):
+            self.assertIn(
+                status_code,
+                responses,
+            )
+
+        self.assertIn(
+            "Retry-After",
+            responses["429"]["headers"],
+        )
+
+    def test_process_overload_returns_429_with_retry_after(
+        self,
+    ):
+        async def reject(_self):
+            return False
+
+        with patch.object(
+            app_module.ConcurrencyGate,
+            "try_acquire",
+            reject,
+        ):
+            with self.make_client():
+                with TestClient(
+                    app_module.app
+                ) as client:
+                    response = client.post(
+                        "/process",
+                        json={
+                            "payload": (
+                                "Email: overload@example.com"
+                            ),
+                            "payload_id": "overload-1",
+                        },
+                    )
+
+        self.assertEqual(
+            response.status_code,
+            429,
+        )
+        self.assertEqual(
+            response.headers.get("Retry-After"),
+            "1",
+        )
+        self.assertEqual(
+            response.json(),
+            {
+                "detail": "Too Many Requests",
+            },
+        )
+
+    def test_process_gate_releases_after_success_and_error(
+        self,
+    ):
+        with self.make_client():
+            with TestClient(
+                app_module.app
+            ) as client:
+                first = client.post(
+                    "/process",
+                    json={
+                        "payload": (
+                            "Email: release@example.com"
+                        ),
+                        "payload_id": "release-1",
+                    },
+                )
+
+                conflict = client.post(
+                    "/process",
+                    json={
+                        "payload": (
+                            "Email: other@example.com"
+                        ),
+                        "payload_id": "release-1",
+                    },
+                )
+
+                in_flight = (
+                    app_module.app.state
+                    .process_concurrency_gate
+                    .in_flight
+                )
+
+        self.assertEqual(
+            first.status_code,
+            200,
+        )
+        self.assertEqual(
+            conflict.status_code,
+            409,
+        )
+        self.assertEqual(
+            in_flight,
+            0,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
