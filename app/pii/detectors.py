@@ -295,10 +295,9 @@ _DRIVER_LICENSE_PATTERN = re.compile(
 )
 
 _CVV_PATTERN = re.compile(
-    r"(?:\bcvv2?\b|\bcvc2?\b|код\s+безопасности)"
-    r"\s*[:=-]?\s*"
-    r"(?P<value>\d{3,4})"
-    r"(?!\d)",
+    r"(?:\bcvv2?\b|\bcvc2?\b|"
+    r"код\s+безопасности(?:\s+карты)?)"
+    r"\s*[:=-]?\s*(?P<value>\d{3,4})(?!\d)",
     re.IGNORECASE,
 )
 

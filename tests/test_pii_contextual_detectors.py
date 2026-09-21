@@ -110,10 +110,14 @@ class PiiContextualDetectorTests(unittest.TestCase):
         for text, expected in (
             ("cVc2: 987", "987"),
             ("КОД БЕЗОПАСНОСТИ 1234", "1234"),
+            ("Код безопасности карты: 321", "321"),
         ):
             with self.subTest(text=text):
                 self.assertEqual(
-                    self.values_for(text, PiiType.CVV),
+                    self.values_for(
+                        text,
+                        PiiType.CVV,
+                    ),
                     [expected],
                 )
 
