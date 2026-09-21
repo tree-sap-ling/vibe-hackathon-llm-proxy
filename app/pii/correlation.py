@@ -119,6 +119,7 @@ class InMemoryCorrelationStore:
         payload_id: str,
         original_payload: str,
         prepared: PreparedRequest,
+        masked_payload: str | None = None,
     ) -> tuple[
         CorrelationRecord,
         bool,
@@ -130,7 +131,11 @@ class InMemoryCorrelationStore:
             original_digest=digest_payload(
                 original_payload
             ),
-            masked_payload=prepared.masked_text,
+            masked_payload=(
+                prepared.masked_text
+                if masked_payload is None
+                else masked_payload
+            ),
             prepared=prepared,
         )
 
