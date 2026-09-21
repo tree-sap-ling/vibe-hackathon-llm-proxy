@@ -104,6 +104,19 @@ class PiiDetectorTests(unittest.TestCase):
             detected,
         )
 
+    def test_email_before_sentence_period_is_detected(self):
+        text = "Напишите на user@example.com."
+
+        entities = build_default_registry().detect(text)
+
+        values = [
+            text[entity.start:entity.end]
+            for entity in entities
+            if entity.pii_type == PiiType.EMAIL
+        ]
+
+        self.assertEqual(values, ["user@example.com"])
+
     def test_detects_valid_ten_and_twelve_digit_inn(self):
         inn10 = make_inn10("123456789")
         inn12 = make_inn12("1234567890")

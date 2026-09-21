@@ -10,7 +10,7 @@ _EMAIL_PATTERN = re.compile(
     r"@"
     r"[A-Z0-9.-]+"
     r"\.[A-Z]{2,63}"
-    r"(?![\w.-])",
+    r"(?![\w-])",
     re.IGNORECASE,
 )
 
