@@ -4,12 +4,20 @@ from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.non_stream_routing import route_non_stream_request
 from app.provider_runtime import build_provider_runtimes
 from app.providers import get_provider_configs
-from app.pii import PiiMetrics
+from app.pii import (
+    ConsumerPolicy,
+    CorrelationConflictError,
+    InMemoryCorrelationStore,
+    PiiMetrics,
+    PiiType,
+    build_processor,
+)
 from app.stats import ProxyStats
 from app.stream_routing import route_stream_request
 from app.streaming import relay_stream
@@ -101,6 +109,18 @@ def get_circuit_recovery_timeout():
     return max(0.0, value)
 
 
+PROCESS_SYSTEM_ID = "autocheck"
+
+
+class ProcessRequest(BaseModel):
+    payload: str
+    payload_id: str
+
+
+class ProcessResponse(BaseModel):
+    result: str
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.http_client = httpx.AsyncClient(
@@ -112,6 +132,19 @@ async def lifespan(app: FastAPI):
     )
     app.state.stats = ProxyStats()
     app.state.pii_metrics = PiiMetrics()
+    app.state.pii_processor = build_processor(
+        (
+            ConsumerPolicy(
+                system_id=PROCESS_SYSTEM_ID,
+                enabled_types=frozenset(PiiType),
+                demask_enabled=True,
+                enabled=True,
+            ),
+        )
+    )
+    app.state.pii_correlation = (
+        InMemoryCorrelationStore()
+    )
     app.state.routing_timeout = get_routing_timeout()
 
     app.state.provider_runtimes = build_provider_runtimes(
@@ -190,6 +223,99 @@ async def readyz(request: Request):
     return JSONResponse(
         status_code=503,
         content={"status": "not_ready"},
+    )
+
+
+@app.post(
+    "/process",
+    response_model=ProcessResponse,
+)
+async def process(
+    body: ProcessRequest,
+    request: Request,
+):
+    store = request.app.state.pii_correlation
+    processor = request.app.state.pii_processor
+
+    try:
+        existing = await store.get(
+            body.payload_id
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    if existing is not None:
+        try:
+            mode, record = (
+                await store.resolve_existing(
+                    payload_id=body.payload_id,
+                    payload=body.payload,
+                )
+            )
+        except CorrelationConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="payload_id conflict",
+            ) from exc
+
+        if mode == "mask_retry":
+            return ProcessResponse(
+                result=record.masked_payload
+            )
+
+        return ProcessResponse(
+            result=processor.finalize_response(
+                record.prepared,
+                body.payload,
+            )
+        )
+
+    prepared = processor.prepare_request(
+        PROCESS_SYSTEM_ID,
+        body.payload,
+    )
+
+    record, created = await store.put_if_absent(
+        payload_id=body.payload_id,
+        original_payload=body.payload,
+        prepared=prepared,
+    )
+
+    if created:
+        await request.app.state.pii_metrics.record(
+            prepared
+        )
+
+        return ProcessResponse(
+            result=record.masked_payload
+        )
+
+    # Another concurrent request inserted this
+    # payload_id after our initial get().
+    try:
+        mode, record = await store.resolve_existing(
+            payload_id=body.payload_id,
+            payload=body.payload,
+        )
+    except CorrelationConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="payload_id conflict",
+        ) from exc
+
+    if mode == "mask_retry":
+        return ProcessResponse(
+            result=record.masked_payload
+        )
+
+    return ProcessResponse(
+        result=processor.finalize_response(
+            record.prepared,
+            body.payload,
+        )
     )
 
 
