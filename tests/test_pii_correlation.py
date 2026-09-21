@@ -255,3 +255,269 @@ class PiiCorrelationStoreTests(
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FakeClock:
+    def __init__(self):
+        self.value = 0.0
+
+    def __call__(self):
+        return self.value
+
+    def advance(self, seconds):
+        self.value += seconds
+
+
+class PiiCorrelationTtlTests(
+    unittest.IsolatedAsyncioTestCase
+):
+    def build_processor(self) -> PiiProcessor:
+        policy = ConsumerPolicy(
+            system_id="autocheck",
+            enabled_types=frozenset(PiiType),
+            demask_enabled=True,
+            enabled=True,
+        )
+
+        return PiiProcessor(
+            PolicyRegistry((policy,))
+        )
+
+    async def test_pending_record_expires_after_pending_ttl(
+        self,
+    ):
+        clock = FakeClock()
+        store = InMemoryCorrelationStore(
+            pending_ttl_seconds=10.0,
+            completed_ttl_seconds=2.0,
+            cleanup_interval_seconds=1.0,
+            clock=clock,
+        )
+        processor = self.build_processor()
+
+        original = "Email: pending@example.com"
+        prepared = processor.prepare_request(
+            "autocheck",
+            original,
+        )
+
+        await store.put_if_absent(
+            payload_id="pending-1",
+            original_payload=original,
+            prepared=prepared,
+        )
+
+        clock.advance(9.0)
+
+        self.assertIsNotNone(
+            await store.get("pending-1")
+        )
+
+        clock.advance(1.0)
+
+        self.assertIsNone(
+            await store.get("pending-1")
+        )
+
+    async def test_completed_record_uses_shorter_ttl(
+        self,
+    ):
+        clock = FakeClock()
+        store = InMemoryCorrelationStore(
+            pending_ttl_seconds=10.0,
+            completed_ttl_seconds=2.0,
+            cleanup_interval_seconds=1.0,
+            clock=clock,
+        )
+        processor = self.build_processor()
+
+        original = "Email: completed@example.com"
+        prepared = processor.prepare_request(
+            "autocheck",
+            original,
+        )
+
+        record, _ = await store.put_if_absent(
+            payload_id="completed-1",
+            original_payload=original,
+            prepared=prepared,
+        )
+
+        mode, _ = await store.resolve_existing(
+            payload_id="completed-1",
+            payload=record.masked_payload,
+        )
+
+        self.assertEqual(mode, "demask")
+
+        clock.advance(1.9)
+
+        self.assertIsNotNone(
+            await store.get("completed-1")
+        )
+
+        clock.advance(0.1)
+
+        self.assertIsNone(
+            await store.get("completed-1")
+        )
+
+    async def test_demask_retry_works_before_completed_ttl(
+        self,
+    ):
+        clock = FakeClock()
+        store = InMemoryCorrelationStore(
+            pending_ttl_seconds=10.0,
+            completed_ttl_seconds=2.0,
+            cleanup_interval_seconds=1.0,
+            clock=clock,
+        )
+        processor = self.build_processor()
+
+        original = "Email: retryttl@example.com"
+        prepared = processor.prepare_request(
+            "autocheck",
+            original,
+        )
+
+        record, _ = await store.put_if_absent(
+            payload_id="completed-retry",
+            original_payload=original,
+            prepared=prepared,
+        )
+
+        first_mode, first_record = (
+            await store.resolve_existing(
+                payload_id="completed-retry",
+                payload=record.masked_payload,
+            )
+        )
+
+        clock.advance(1.0)
+
+        second_mode, second_record = (
+            await store.resolve_existing(
+                payload_id="completed-retry",
+                payload=record.masked_payload,
+            )
+        )
+
+        self.assertEqual(first_mode, "demask")
+        self.assertEqual(second_mode, "demask")
+        self.assertEqual(
+            processor.finalize_response(
+                first_record.prepared,
+                record.masked_payload,
+            ),
+            original,
+        )
+        self.assertEqual(
+            processor.finalize_response(
+                second_record.prepared,
+                record.masked_payload,
+            ),
+            original,
+        )
+
+    async def test_expired_payload_id_can_start_new_pair(
+        self,
+    ):
+        clock = FakeClock()
+        store = InMemoryCorrelationStore(
+            pending_ttl_seconds=5.0,
+            completed_ttl_seconds=2.0,
+            cleanup_interval_seconds=1.0,
+            clock=clock,
+        )
+        processor = self.build_processor()
+
+        first_original = "Email: firstttl@example.com"
+        first_prepared = processor.prepare_request(
+            "autocheck",
+            first_original,
+        )
+
+        await store.put_if_absent(
+            payload_id="reusable-id",
+            original_payload=first_original,
+            prepared=first_prepared,
+        )
+
+        clock.advance(5.0)
+
+        second_original = "Email: secondttl@example.com"
+        second_prepared = processor.prepare_request(
+            "autocheck",
+            second_original,
+        )
+
+        second_record, created = (
+            await store.put_if_absent(
+                payload_id="reusable-id",
+                original_payload=second_original,
+                prepared=second_prepared,
+            )
+        )
+
+        self.assertTrue(created)
+        self.assertTrue(
+            second_record.matches_original(
+                second_original
+            )
+        )
+
+    async def test_cleanup_reports_removed_count(
+        self,
+    ):
+        clock = FakeClock()
+        store = InMemoryCorrelationStore(
+            pending_ttl_seconds=3.0,
+            completed_ttl_seconds=2.0,
+            cleanup_interval_seconds=100.0,
+            clock=clock,
+        )
+        processor = self.build_processor()
+
+        for index in range(2):
+            original = (
+                f"Email: cleanup{index}@example.com"
+            )
+            prepared = processor.prepare_request(
+                "autocheck",
+                original,
+            )
+
+            await store.put_if_absent(
+                payload_id=f"cleanup-{index}",
+                original_payload=original,
+                prepared=prepared,
+            )
+
+        clock.advance(3.0)
+
+        self.assertEqual(
+            await store.cleanup(),
+            2,
+        )
+        self.assertEqual(
+            await store.size(),
+            0,
+        )
+
+    async def test_ttl_configuration_must_be_positive(
+        self,
+    ):
+        with self.assertRaises(ValueError):
+            InMemoryCorrelationStore(
+                pending_ttl_seconds=0,
+            )
+
+        with self.assertRaises(ValueError):
+            InMemoryCorrelationStore(
+                completed_ttl_seconds=0,
+            )
+
+        with self.assertRaises(ValueError):
+            InMemoryCorrelationStore(
+                cleanup_interval_seconds=0,
+            )
