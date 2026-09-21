@@ -9,6 +9,11 @@ class PiiType(str, Enum):
     BANK_CARD = "bank_card"
     PASSPORT_RF = "passport_rf"
     SUBDIVISION_CODE = "subdivision_code"
+    BIRTH_DATE = "birth_date"
+    PASSPORT_ISSUE_DATE = "passport_issue_date"
+    DRIVER_LICENSE = "driver_license"
+    CVV = "cvv"
+    PIN = "pin"
 
 
 @dataclass(frozen=True, slots=True)

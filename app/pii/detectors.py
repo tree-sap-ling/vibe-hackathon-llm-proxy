@@ -242,3 +242,242 @@ def detect_subdivision_code(text: str) -> Iterable[PiiEntity]:
             end=end,
             confidence=0.98,
         )
+
+
+_RU_MONTHS = {
+    "января": 1,
+    "февраля": 2,
+    "марта": 3,
+    "апреля": 4,
+    "мая": 5,
+    "июня": 6,
+    "июля": 7,
+    "августа": 8,
+    "сентября": 9,
+    "октября": 10,
+    "ноября": 11,
+    "декабря": 12,
+}
+
+_DATE_VALUE_PATTERN = (
+    r"(?:"
+    r"\d{1,2}[./-]\d{1,2}[./-]\d{4}"
+    r"|"
+    r"\d{4}[./-]\d{1,2}[./-]\d{1,2}"
+    r"|"
+    r"\d{1,2}\s+"
+    r"(?:января|февраля|марта|апреля|мая|июня|июля|августа|"
+    r"сентября|октября|ноября|декабря)"
+    r"\s+\d{4}"
+    r")"
+)
+
+_BIRTH_DATE_PATTERN = re.compile(
+    r"(?:дата\s+рождения|родил(?:ся|ась)?)"
+    r"\s*[:=-]?\s*"
+    r"(?P<value>" + _DATE_VALUE_PATTERN + r")",
+    re.IGNORECASE,
+)
+
+_PASSPORT_ISSUE_DATE_PATTERN = re.compile(
+    r"(?:"
+    r"дата\s+выдачи(?:\s+паспорта)?"
+    r"|"
+    r"паспорт\s+выдан"
+    r")"
+    r"\s*[:=-]?\s*"
+    r"(?P<value>" + _DATE_VALUE_PATTERN + r")",
+    re.IGNORECASE,
+)
+
+_DRIVER_LICENSE_PATTERN = re.compile(
+    r"(?:"
+    r"водительск(?:ое|ого)\s+удостоверени(?:е|я)"
+    r"|"
+    r"в\s*/\s*у"
+    r"|"
+    r"\bву\b"
+    r")"
+    r"\s*[:№N=-]?\s*"
+    r"(?P<value>\d{2}\s?\d{2}\s?\d{6})"
+    r"(?!\d)",
+    re.IGNORECASE,
+)
+
+_CVV_PATTERN = re.compile(
+    r"(?:\bcvv2?\b|\bcvc2?\b|код\s+безопасности)"
+    r"\s*[:=-]?\s*"
+    r"(?P<value>\d{3,4})"
+    r"(?!\d)",
+    re.IGNORECASE,
+)
+
+_PIN_PATTERN = re.compile(
+    r"(?:\bpin\b|пин(?:\s*|-)?код)"
+    r"\s*[:=-]?\s*"
+    r"(?P<value>\d{4})"
+    r"(?!\d)",
+    re.IGNORECASE,
+)
+
+
+def _valid_calendar_date(value: str) -> bool:
+    from datetime import date
+
+    normalized = value.strip().lower()
+
+    text_match = re.fullmatch(
+        r"(?P<day>\d{1,2})\s+"
+        r"(?P<month>[а-яё]+)\s+"
+        r"(?P<year>\d{4})",
+        normalized,
+        re.IGNORECASE,
+    )
+
+    candidates = []
+
+    if text_match:
+        month = _RU_MONTHS.get(
+            text_match.group("month")
+        )
+
+        if month is None:
+            return False
+
+        candidates.append(
+            (
+                int(text_match.group("year")),
+                month,
+                int(text_match.group("day")),
+            )
+        )
+    else:
+        parts = re.split(r"[./-]", normalized)
+
+        if len(parts) != 3:
+            return False
+
+        first, second, third = parts
+
+        try:
+            a = int(first)
+            b = int(second)
+            c = int(third)
+        except ValueError:
+            return False
+
+        if len(first) == 4:
+            candidates.extend(
+                (
+                    (a, b, c),
+                    (a, c, b),
+                )
+            )
+        elif len(third) == 4:
+            candidates.extend(
+                (
+                    (c, b, a),
+                    (c, a, b),
+                )
+            )
+        else:
+            return False
+
+    for year, month, day in candidates:
+        if not 1900 <= year <= 2100:
+            continue
+
+        try:
+            date(year, month, day)
+        except ValueError:
+            continue
+
+        return True
+
+    return False
+
+
+def _detect_contextual_date(
+    text: str,
+    pattern: re.Pattern[str],
+    pii_type: PiiType,
+    confidence: float,
+) -> Iterable[PiiEntity]:
+    for match in pattern.finditer(text):
+        value = match.group("value")
+
+        if not _valid_calendar_date(value):
+            continue
+
+        start, end = match.span("value")
+
+        yield PiiEntity(
+            pii_type=pii_type,
+            start=start,
+            end=end,
+            confidence=confidence,
+        )
+
+
+def detect_birth_date(
+    text: str,
+) -> Iterable[PiiEntity]:
+    yield from _detect_contextual_date(
+        text,
+        _BIRTH_DATE_PATTERN,
+        PiiType.BIRTH_DATE,
+        0.98,
+    )
+
+
+def detect_passport_issue_date(
+    text: str,
+) -> Iterable[PiiEntity]:
+    yield from _detect_contextual_date(
+        text,
+        _PASSPORT_ISSUE_DATE_PATTERN,
+        PiiType.PASSPORT_ISSUE_DATE,
+        0.98,
+    )
+
+
+def detect_driver_license(
+    text: str,
+) -> Iterable[PiiEntity]:
+    for match in _DRIVER_LICENSE_PATTERN.finditer(text):
+        start, end = match.span("value")
+
+        yield PiiEntity(
+            pii_type=PiiType.DRIVER_LICENSE,
+            start=start,
+            end=end,
+            confidence=0.985,
+        )
+
+
+def detect_cvv(
+    text: str,
+) -> Iterable[PiiEntity]:
+    for match in _CVV_PATTERN.finditer(text):
+        start, end = match.span("value")
+
+        yield PiiEntity(
+            pii_type=PiiType.CVV,
+            start=start,
+            end=end,
+            confidence=0.99,
+        )
+
+
+def detect_pin(
+    text: str,
+) -> Iterable[PiiEntity]:
+    for match in _PIN_PATTERN.finditer(text):
+        start, end = match.span("value")
+
+        yield PiiEntity(
+            pii_type=PiiType.PIN,
+            start=start,
+            end=end,
+            confidence=0.99,
+        )

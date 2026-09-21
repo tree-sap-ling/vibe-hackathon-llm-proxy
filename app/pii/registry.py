@@ -73,10 +73,15 @@ def resolve_overlaps(
 def build_default_registry() -> DetectorRegistry:
     from app.pii.detectors import (
         detect_bank_card,
+        detect_birth_date,
+        detect_cvv,
+        detect_driver_license,
         detect_email,
         detect_inn,
+        detect_passport_issue_date,
         detect_passport_rf,
         detect_phone,
+        detect_pin,
         detect_subdivision_code,
     )
 
@@ -88,5 +93,10 @@ def build_default_registry() -> DetectorRegistry:
             detect_bank_card,
             detect_passport_rf,
             detect_subdivision_code,
+            detect_birth_date,
+            detect_passport_issue_date,
+            detect_driver_license,
+            detect_cvv,
+            detect_pin,
         )
     )
