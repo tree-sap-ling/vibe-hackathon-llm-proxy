@@ -17,6 +17,7 @@ from app.pii.processor import (
     PreparedRequest,
     build_processor,
 )
+from app.pii.metrics import PiiMetrics
 from app.pii.registry import DetectorRegistry, build_default_registry
 
 __all__ = [
@@ -27,6 +28,7 @@ __all__ = [
     "MaskingVault",
     "PiiAuditEvent",
     "PiiEntity",
+    "PiiMetrics",
     "PiiProcessor",
     "PiiType",
     "PolicyError",
