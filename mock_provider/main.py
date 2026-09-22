@@ -122,6 +122,11 @@ async def chat_completions(payload: dict):
         "id": "mock-chat-completion",
         "object": "chat.completion",
         "model": model,
+        "usage": {
+            "prompt_tokens": 6,
+            "completion_tokens": 4,
+            "total_tokens": 10,
+        },
         "choices": [
             {
                 "index": 0,

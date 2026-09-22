@@ -26,6 +26,14 @@ class MockProviderTests(unittest.TestCase):
             response.json()["choices"][0]["message"]["content"],
             "Mock reply: hello",
         )
+        self.assertEqual(
+            response.json()["usage"],
+            {
+                "prompt_tokens": 6,
+                "completion_tokens": 4,
+                "total_tokens": 10,
+            },
+        )
 
     def test_stream_response_uses_sse_and_done_marker(self):
         with TestClient(app) as client:

@@ -427,3 +427,14 @@ export PII_POLICIES_JSON='[{"system_id":"autocheck","enabled_types":["*"],"demas
 Текущая policy управляет списком детектируемых PII types, разрешением consumer
 и demasking. Стиль маскирования пока общий для типа PII и не настраивается
 per-system; это отдельное расширение roadmap.
+
+## TPS (tokens per second)
+
+`GET /stats` публикует поле `tps`. Оно считается только по успешным non-stream
+LLM-ответам, где provider вернул `usage.total_tokens`:
+`sum(provider_reported_total_tokens) / sum(proxy_observed_request_seconds)`.
+Сервис не оценивает число токенов по символам или словам; если provider не прислал
+`usage.total_tokens`, такой ответ в TPS не включается. `token_usage.samples`,
+`provider_reported_total_tokens` и `observed_seconds` позволяют проверить базу
+расчёта. Streaming TPS пока не собирается; mock provider использует фиксированный
+demo `usage` только для проверки механизма метрики.

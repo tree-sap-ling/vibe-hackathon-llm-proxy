@@ -3,6 +3,7 @@ from uuid import uuid4
 import asyncio
 import os
 from contextlib import asynccontextmanager
+from time import perf_counter
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -537,6 +538,8 @@ async def chat_completions(request: Request):
                 ),
             )
 
+        routing_started = perf_counter()
+
         routing_result = await route_non_stream_request(
             request.app.state.http_client,
             request.app.state.provider_runtimes,
@@ -545,13 +548,33 @@ async def chat_completions(request: Request):
             routing_timeout=request.app.state.routing_timeout,
         )
 
+        routing_elapsed_seconds = perf_counter() - routing_started
+
         if routing_result.response is not None:
             await request.app.state.stats.increment(
                 "completed_requests"
             )
 
+            upstream_payload = routing_result.response.json()
+            usage = upstream_payload.get("usage")
+
+            if (
+                isinstance(usage, dict)
+                and 200 <= routing_result.response.status_code < 300
+            ):
+                total_tokens = usage.get("total_tokens")
+
+                if (
+                    isinstance(total_tokens, int)
+                    and not isinstance(total_tokens, bool)
+                ):
+                    await request.app.state.stats.record_token_usage(
+                        total_tokens=total_tokens,
+                        observed_seconds=routing_elapsed_seconds,
+                    )
+
             response_payload = finalize_chat_response(
-                routing_result.response.json(),
+                upstream_payload,
                 request.app.state.pii_processor,
                 prepared_chat.prepared_requests,
             )

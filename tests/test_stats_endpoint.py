@@ -78,6 +78,16 @@ class StatsEndpointTests(unittest.TestCase):
         self.assertEqual(data["circuit_open_rejections"], 0)
         self.assertEqual(data["upstream_errors"], 0)
         self.assertEqual(data["upstream_timeouts"], 0)
+        self.assertEqual(data["tps"], 0.0)
+        self.assertEqual(data["token_usage"]["samples"], 0)
+        self.assertEqual(
+            data["token_usage"]["provider_reported_total_tokens"],
+            0,
+        )
+        self.assertEqual(
+            data["token_usage"]["observed_seconds"],
+            0.0,
+        )
 
         self.assertEqual(data["circuit"]["state"], "closed")
         self.assertEqual(data["circuit"]["failure_count"], 0)

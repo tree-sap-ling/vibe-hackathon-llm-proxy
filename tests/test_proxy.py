@@ -60,6 +60,11 @@ class FakeAsyncClient:
                 "id": "fake-completion",
                 "object": "chat.completion",
                 "model": json.get("model", "mock-model"),
+                "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 3,
+                    "total_tokens": 8,
+                },
                 "choices": [
                     {
                         "index": 0,
@@ -147,6 +152,16 @@ class ProxyTests(unittest.TestCase):
             response.json()["choices"][0]["message"]["content"],
             "Mock reply: Hello test",
         )
+
+        stats_response = client.get("/stats")
+        stats = stats_response.json()
+
+        self.assertEqual(stats["token_usage"]["samples"], 1)
+        self.assertEqual(
+            stats["token_usage"]["provider_reported_total_tokens"],
+            8,
+        )
+        self.assertGreater(stats["tps"], 0.0)
 
     def test_chat_masks_pii_before_upstream_and_demasks_response(self):
         client = self.make_client(mode="healthy")
