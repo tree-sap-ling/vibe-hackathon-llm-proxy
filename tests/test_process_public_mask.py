@@ -12,8 +12,8 @@ class ProcessPublicMaskTests(unittest.TestCase):
             "паспорт 4509 123456"
         )
         expected_mask = (
-            "Клиент И. И. И., "
-            "паспорт 45** ****56"
+            "Клиент ****** **** ********, "
+            "паспорт **** ******"
         )
 
         with TestClient(app_module.app) as client:

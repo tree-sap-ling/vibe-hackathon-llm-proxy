@@ -53,8 +53,8 @@ class PublicMaskCorrelationTests(
         self.assertEqual(
             public_mask,
             (
-                "Клиент И. И. И., "
-                "паспорт 45** ****56"
+                "Клиент ****** **** ********, "
+                "паспорт **** ******"
             ),
         )
 

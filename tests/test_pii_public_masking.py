@@ -12,14 +12,14 @@ from app.pii.public_masking import (
 
 
 class PublicMaskingTests(unittest.TestCase):
-    def test_published_example_matches_exactly(self):
+    def test_published_example_is_fully_hidden(self):
         source = (
             "Клиент Иванов Иван Иванович, "
             "паспорт 4509 123456"
         )
         expected = (
-            "Клиент И. И. И., "
-            "паспорт 45** ****56"
+            "Клиент ****** **** ********, "
+            "паспорт **** ******"
         )
 
         entities = build_default_registry().detect(
@@ -34,22 +34,22 @@ class PublicMaskingTests(unittest.TestCase):
             expected,
         )
 
-    def test_fio_uses_initials(self):
+    def test_fio_is_fully_hidden(self):
         self.assertEqual(
             mask_public_value(
                 PiiType.FIO,
                 "Иванов Иван Иванович",
             ),
-            "И. И. И.",
+            "****** **** ********",
         )
 
-    def test_passport_preserves_outer_digits(self):
+    def test_passport_is_fully_hidden(self):
         self.assertEqual(
             mask_public_value(
                 PiiType.PASSPORT_RF,
                 "4509 123456",
             ),
-            "45** ****56",
+            "**** ******",
         )
 
     def test_passport_words_are_preserved(self):
@@ -58,7 +58,7 @@ class PublicMaskingTests(unittest.TestCase):
                 PiiType.PASSPORT_RF,
                 "45 10 номер 123456",
             ),
-            "45 ** номер ****56",
+            "** ** номер ******",
         )
 
     def test_generic_mask_preserves_separators(self):
@@ -98,17 +98,17 @@ class PublicMaskingTests(unittest.TestCase):
         self.assertEqual(
             result,
             "Место рождения клиента: "
-            "*. ******.",
+            "г. ******.",
         )
         self.assertTrue(
             result.endswith(".")
         )
 
     def test_generic_replacement_keeps_length(self):
-        value = "15 мая 1990 года"
+        value = "user@example.com"
 
         masked = mask_public_value(
-            PiiType.BIRTH_DATE,
+            PiiType.EMAIL,
             value,
         )
 
@@ -131,6 +131,50 @@ class PublicMaskingTests(unittest.TestCase):
                     masked_char,
                     source_char,
                 )
+
+    def test_date_keeps_year_service_word(self):
+        self.assertEqual(
+            mask_public_value(
+                PiiType.BIRTH_DATE,
+                "15 мая 1990 года",
+            ),
+            "** *** **** года",
+        )
+
+    def test_passport_issue_date_keeps_year_service_word(self):
+        self.assertEqual(
+            mask_public_value(
+                PiiType.PASSPORT_ISSUE_DATE,
+                "21 августа 2015 года",
+            ),
+            "** ******* **** года",
+        )
+
+    def test_driver_license_keeps_number_service_word(self):
+        self.assertEqual(
+            mask_public_value(
+                PiiType.DRIVER_LICENSE,
+                "66 66 номер 654321",
+            ),
+            "** ** номер ******",
+        )
+
+    def test_full_address_keeps_component_service_labels(self):
+        value = (
+            "123456, Россия, г. Москва, "
+            "ул. Тверская, д. 10, кв. 5"
+        )
+
+        self.assertEqual(
+            mask_public_value(
+                PiiType.ADDRESS,
+                value,
+            ),
+            (
+                "******, ******, г. ******, "
+                "ул. ********, д. **, кв. *"
+            ),
+        )
 
     def test_render_rejects_overlapping_entities(self):
         with self.assertRaises(ValueError):

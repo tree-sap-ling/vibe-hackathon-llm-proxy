@@ -3,86 +3,87 @@ import re
 from app.pii.models import PiiEntity, PiiType
 
 
-def _mask_fio(value: str) -> str:
-    parts = re.split(r"(\s+)", value)
-    masked_parts: list[str] = []
+_YEAR_SERVICE_PATTERNS = (
+    re.compile(r"\b(?:год|года)\b", re.IGNORECASE),
+    re.compile(r"(?<!\w)г\.(?=\s|$)", re.IGNORECASE),
+)
 
-    for part in parts:
-        if not part:
-            continue
+_DOCUMENT_SERVICE_PATTERNS = (
+    re.compile(r"\b(?:серия|номер)\b", re.IGNORECASE),
+    re.compile(r"(?<!\w)[Nn](?=\s*\d)"),
+)
 
-        if part.isspace():
-            masked_parts.append(part)
-            continue
+_PLACE_SERVICE_PATTERNS = (
+    re.compile(r"(?<!\w)г\.(?=\s|$)", re.IGNORECASE),
+    re.compile(
+        r"\b(?:город|республика|область|край|район)\b",
+        re.IGNORECASE,
+    ),
+)
 
-        hyphen_parts = part.split("-")
-        masked_hyphen_parts: list[str] = []
+_ADDRESS_SERVICE_PATTERNS = (
+    re.compile(
+        r"(?<!\w)(?:г|ул|д|кв|корп|стр|обл|пер|наб|ш)"
+        r"\.(?=\s|$)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?<!\w)(?:р-н|пр-т)(?=\s|$)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:"
+        r"город|улица|дом|квартира|корпус|строение|"
+        r"область|район|республика|край|"
+        r"проспект|переулок|набережная|шоссе"
+        r")\b",
+        re.IGNORECASE,
+    ),
+)
 
-        for item in hyphen_parts:
-            first_letter = next(
-                (
-                    char
-                    for char in item
-                    if char.isalpha()
-                ),
-                None,
+_SERVICE_PATTERNS_BY_TYPE = {
+    PiiType.PASSPORT_RF: _DOCUMENT_SERVICE_PATTERNS,
+    PiiType.DRIVER_LICENSE: _DOCUMENT_SERVICE_PATTERNS,
+    PiiType.BIRTH_DATE: _YEAR_SERVICE_PATTERNS,
+    PiiType.PASSPORT_ISSUE_DATE: _YEAR_SERVICE_PATTERNS,
+    PiiType.BIRTH_PLACE: _PLACE_SERVICE_PATTERNS,
+    PiiType.ADDRESS: _ADDRESS_SERVICE_PATTERNS,
+}
+
+
+def _preserved_positions(
+    value: str,
+    patterns: tuple[re.Pattern[str], ...],
+) -> set[int]:
+    preserved: set[int] = set()
+
+    for pattern in patterns:
+        for match in pattern.finditer(value):
+            preserved.update(
+                range(match.start(), match.end())
             )
 
-            if first_letter is None:
-                masked_hyphen_parts.append(
-                    "".join(
-                        "*"
-                        if char.isalnum()
-                        else char
-                        for char in item
-                    )
-                )
-                continue
-
-            masked_hyphen_parts.append(
-                f"{first_letter}."
-            )
-
-        masked_parts.append(
-            "-".join(masked_hyphen_parts)
-        )
-
-    return "".join(masked_parts)
+    return preserved
 
 
-def _mask_passport_rf(value: str) -> str:
-    digit_positions = [
-        index
-        for index, char in enumerate(value)
-        if char.isdigit()
-    ]
-
-    if len(digit_positions) < 5:
-        return _mask_generic(value)
-
-    visible_positions = set(
-        digit_positions[:2]
-        + digit_positions[-2:]
+def _mask_generic(
+    value: str,
+    *,
+    preserved_patterns: tuple[
+        re.Pattern[str],
+        ...,
+    ] = (),
+) -> str:
+    preserved = _preserved_positions(
+        value,
+        preserved_patterns,
     )
 
-    chars = list(value)
-
-    for index, char in enumerate(chars):
-        if (
-            char.isdigit()
-            and index not in visible_positions
-        ):
-            chars[index] = "*"
-
-    return "".join(chars)
-
-
-def _mask_generic(value: str) -> str:
     return "".join(
-        "*"
-        if char.isalnum()
-        else char
-        for char in value
+        char
+        if index in preserved or not char.isalnum()
+        else "*"
+        for index, char in enumerate(value)
     )
 
 
@@ -91,21 +92,20 @@ def mask_public_value(
     value: str,
 ) -> str:
     """
-    Render a scorer-facing masking candidate.
+    Fully hide PII alphanumeric characters while keeping
+    separators and known structural/service markers readable.
 
-    FIO and Russian passport behavior are based on the
-    single published API example. Other PII types use a
-    conservative shape-preserving fallback: letters and
-    digits become '*', separators stay in place.
+    Exact restoration uses the internal request-local vault
+    and does not depend on this scorer-facing representation.
     """
 
-    if pii_type == PiiType.FIO:
-        return _mask_fio(value)
-
-    if pii_type == PiiType.PASSPORT_RF:
-        return _mask_passport_rf(value)
-
-    return _mask_generic(value)
+    return _mask_generic(
+        value,
+        preserved_patterns=_SERVICE_PATTERNS_BY_TYPE.get(
+            pii_type,
+            (),
+        ),
+    )
 
 
 def render_public_mask(
@@ -141,9 +141,7 @@ def render_public_mask(
     cursor = 0
 
     for entity in ordered:
-        parts.append(
-            text[cursor:entity.start]
-        )
+        parts.append(text[cursor:entity.start])
 
         original_value = text[
             entity.start:entity.end
