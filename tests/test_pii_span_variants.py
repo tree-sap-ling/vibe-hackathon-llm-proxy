@@ -125,6 +125,38 @@ class PiiSpanVariantTests(unittest.TestCase):
             ["ОВД района Арбат города Москвы"],
         )
 
+    def test_passport_issuer_inline_after_number(self):
+        text = (
+            "Паспорт клиента: серия 45 10 номер 654321, "
+            "выдан ОВД Центрального района г. Москвы, "
+            "код подразделения 770-001, "
+            "дата выдачи 20.04.2015."
+        )
+
+        self.assertEqual(
+            self.values_for(
+                text,
+                PiiType.PASSPORT_ISSUER,
+            ),
+            ["ОВД Центрального района г. Москвы"],
+        )
+
+    def test_passport_issuer_before_subdivision_code(self):
+        text = (
+            "Паспорт клиента: серия 45 10 номер 654321, "
+            "кем выдан: ОВД Центрального района г. Москвы, "
+            "код подразделения 770-001, "
+            "дата выдачи 20.04.2015."
+        )
+
+        self.assertEqual(
+            self.values_for(
+                text,
+                PiiType.PASSPORT_ISSUER,
+            ),
+            ["ОВД Центрального района г. Москвы"],
+        )
+
     def test_full_address_period_is_outside_span(self):
         text = (
             "Адрес проживания: "
