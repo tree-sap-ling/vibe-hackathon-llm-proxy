@@ -9,54 +9,52 @@
 
 ## `/process`: current release paired benchmark
 
-Последний benchmark выполнен после интеграции public shape-mask,
-на committed runtime `e85532a`.
+Финальный release-like benchmark выполнен на committed runtime `49ebad0`.
+Собирался текущий `Dockerfile`, контейнер запускался его обычным CMD с одним
+Uvicorn worker; client и server работали на одной Ubuntu 24.04 VirtualBox VM.
+Поэтому результаты подходят для локальной regression/diagnostics, но не являются
+production SLA и не гарантируют ту же пропускную способность на другой
+инфраструктуре.
 
-Во всех прогонах:
+В основном прогоне использовались 2000 пар mask → demask на точку
+(4000 HTTP requests), exact check опубликованной shape-mask и exact round-trip
+для каждой пары. Все запросы завершились `HTTP 200`; container logs не содержали
+проверяемые raw PII или внутренние `<PII:...>` tokens.
 
-- один Uvicorn worker;
-- `PROCESS_MAX_IN_FLIGHT=50`;
-- 2000 пар mask → demask;
-- 4000 HTTP requests на точку;
-- exact round-trip check для каждой пары;
-- public response проверялся на отсутствие `<PII:...>`;
-- synthetic payload содержал email;
-- client и server работали на одной VirtualBox VM.
-
-### Docker CMD, access log включён
-
-Это режим, который реально запускается текущим `Dockerfile`:
+### Default Docker CMD
 
 ```text
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-| Client concurrency | Successful pairs | HTTP 200 | Successful HTTP RPS | MASK p50 | MASK p95 | DEMASK p50 | DEMASK p95 |
-|---:|---:|---:|---:|---:|---:|---:|---:|
-| 4 | 2000/2000 | 4000/4000 | 1074.4 | 3.49 ms | 5.52 ms | 3.36 ms | 5.41 ms |
-| 6 | 2000/2000 | 4000/4000 | 1094.8 | 4.83 ms | 9.57 ms | 4.79 ms | 9.44 ms |
+| Client concurrency | Successful pairs | HTTP 200 | HTTP RPS | MASK p50 | MASK p95 | MASK p99 | DEMASK p50 | DEMASK p95 | DEMASK p99 |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 4 | 2000/2000 | 4000/4000 | 955.4 | 3.845 ms | 5.994 ms | 7.811 ms | 3.684 ms | 5.611 ms | 7.402 ms |
+| 6 | 2000/2000 | 4000/4000 | 992.4 | 5.558 ms | 10.854 ms | 15.210 ms | 4.892 ms | 9.337 ms | 13.007 ms |
 
-Для каждой точки container logs содержали 4000 access-log строк и
-2000 safe PII audit events. Проверки не обнаружили raw email,
-`payload_id` или внутренних `<PII:...>` tokens в логах.
+Ориентир 1000 HTTP RPS в этом конкретном финальном прогоне не был устойчиво
+превышен, хотя c6 приблизился к нему. При этом p95 latency оставалась порядка
+миллисекунд и существенно ниже ориентира 1 s.
 
-Эти результаты показывают, что текущая release-конфигурация на этой
-локальной VM пересекла ориентир 1000 successful HTTP req/s. Это не
-является доказательством official SLA на инфраструктуре организаторов.
+### Repeated scaling sweep
 
-### Локальный uvicorn с `--no-access-log`
+Чтобы не делать вывод по одному удачному прогону, тот же release-like runtime
+измерялся по три раза при c6/c8/c12. Каждый round — 1500 пар, то есть
+3000 HTTP requests, с exact mask/demask checks и только `HTTP 200`.
 
-Контрольный прогон того же committed runtime без access log:
+| Concurrency | Median RPS | Min RPS | Max RPS | Worst MASK p95 | Worst DEMASK p95 |
+|---:|---:|---:|---:|---:|---:|
+| 6 | 933.4 | 914.7 | 984.7 | 11.589 ms | 10.599 ms |
+| 8 | 848.5 | 822.0 | 854.9 | 23.040 ms | 17.695 ms |
+| 12 | 682.3 | 492.5 | 718.0 | 52.989 ms | 35.599 ms |
 
-| Client concurrency | Successful pairs | Successful HTTP RPS | MASK p50 | MASK p95 | DEMASK p50 | DEMASK p95 |
-|---:|---:|---:|---:|---:|---:|---:|
-| 4 | 2000/2000 | 1219.8 | 2.99 ms | 5.32 ms | 2.96 ms | 5.05 ms |
-| 6 | 2000/2000 | 1299.4 | 3.69 ms | 8.68 ms | 3.62 ms | 8.51 ms |
+На этой VM увеличение client concurrency выше c6 снижало throughput, поэтому
+runtime не переводился на более высокую concurrency только ради единичной цифры.
 
-Access logging поэтому измеримо влияет на throughput, но в текущем
-Docker CMD он оставлен включённым: даже с ним локальный release-run
-прошёл без ошибок и выше 1000 req/s. Runtime специально не менялся
-после этого измерения.
+Отдельный exploratory запуск с `--no-access-log` один раз дал c4 median
+1045.3 RPS, но повторная проверка того же runtime-настройки дала median
+901.5 RPS. Из-за отсутствия воспроизводимости этот tweak не был закоммичен
+и результат >1000 RPS не используется как финальное доказательство.
 
 ## `/process`: overload behavior
 
@@ -86,37 +84,28 @@ Retry-After=1: 58/58
 
 ## Large payload smoke
 
-Post-public-mask HTTP smoke использовал synthetic payload ровно из:
-
-```text
-100000 whitespace-separated units
-600011 bytes
-```
-
-Это были `99998` слов `token`, затем `Email:` и
-`user@example.com`.
+На current runtime `49ebad0` отдельный HTTP smoke использовал synthetic payload
+ровно из `100000 whitespace-separated units`.
 
 Результат:
 
 | Метрика | Значение |
 |---|---:|
+| Whitespace-separated units | 100000 |
+| Characters | 700016 |
+| UTF-8 bytes | 1300004 |
 | Mask HTTP status | 200 |
-| Mask latency | 248.85 ms |
+| Mask latency | 227.753 ms |
 | Demask HTTP status | 200 |
-| Demask latency | 9.21 ms |
-| Public email mask present | yes |
-| Internal `<PII:...>` in public response | no |
+| Demask latency | 28.138 ms |
+| Raw test email in masked result | no |
 | Exact round-trip | yes |
 
-Server logs не содержали raw email, `payload_id` или внутренних
-`<PII:...>` tokens.
-
-Этот payload отличается от более раннего synthetic large-text smoke,
-поэтому отдельные latency numbers нельзя трактовать как точное
-before/after сравнение renderer-а.
+Container logs не содержали тестовый raw email или внутренние `<PII:...>` tokens.
 
 Важно: `100000 whitespace-separated units` — это не доказанные
-`100000 tokenizer tokens`, потому что официальный tokenizer не задан.
+`100000 tokenizer tokens`, потому что официальный tokenizer для `/process`
+не задан.
 
 ## Local quality regression corpora
 
@@ -126,7 +115,7 @@ before/after сравнение renderer-а.
 - synthetic corpus: 34/34;
 - adversarial corpus: 53/53;
 - exact-span corpus: 30/30;
-- полный regression suite после интеграции: 167/167.
+- полный regression suite на `49ebad0`: 189/189.
 
 Эти цифры означают только прохождение наших собственных cases.
 Они не являются официальным quality score и не подтверждают target 95%

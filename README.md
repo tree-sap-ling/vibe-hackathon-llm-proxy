@@ -149,6 +149,9 @@ Runtime-метрики текущего процесса:
 - `circuit_open_rejections`;
 - `upstream_errors`;
 - `upstream_timeouts`;
+- `tps` и `token_usage` для provider-reported LLM token usage;
+- safe aggregate PII metrics (`processed_requests`, latency percentiles,
+  counts по PII type), без исходных значений PII;
 - отдельные circuit breaker metrics для primary и fallback.
 
 ## Локальный запуск
@@ -335,6 +338,14 @@ curl -X POST http://127.0.0.1:8000/process \
 регрессии и диагностики. Они не являются официальным score: итоговая
 точность определяется скрытым эталонным датасетом организаторов.
 
+На current runtime `49ebad0` полный regression suite прошёл `189/189`.
+Финальный release-like `/process` benchmark дал 955.4 RPS при c4 и
+992.4 RPS при c6; repeated c6 sweep дал median 933.4 RPS
+(914.7–984.7). Это локальные измерения одной VirtualBox VM, поэтому
+они не заявляются как гарантированный production/official SLA.
+Текущий 100000-unit HTTP smoke: mask 227.753 ms, demask 28.138 ms,
+exact round-trip. Подробности и методика — в `BENCHMARKS.md`.
+
 ## Docker
 
 Сборка production image:
@@ -391,19 +402,16 @@ Redis, load balancer и несколько proxy replica могут быть д�
 - load tests;
 - Docker image.
 
-После публикации официального задания нужно в первую очередь уточнить:
+Официальный конкурсный контракт уже учтён в текущем `/process` path:
+paired mask/demask по `payload_id`, public shape-mask, `429` с
+`Retry-After`, один HTTP worker для process-local correlation state,
+safe aggregate metrics и конфигурируемая per-system PII policy.
 
-- точный API contract;
-- формат запуска для autocheck;
-- обязательный порт;
-- SLA и способ его измерения;
-- RPS и concurrency;
-- streaming requirements;
-- CPU/RAM limits;
-- доступность интернета;
-- предоставляемые LLM endpoint и credentials;
-- разрешённые внешние сервисы;
-- сценарии отказов в autocheck.
+Ограничения, которые остаются важными для интерпретации результатов:
+локальные benchmarks не равны инфраструктуре организаторов; 100000
+whitespace-separated units не приравниваются к tokenizer tokens;
+LLM streaming с обнаруженной PII намеренно fail-closed; per-system
+masking style пока не настраивается.
 
 ## Per-system PII policy
 
