@@ -1,3 +1,4 @@
+import json
 import unittest
 from unittest.mock import patch
 
@@ -10,6 +11,7 @@ import app.main as app_module
 class FakeAsyncClient:
     def __init__(self, mode="healthy"):
         self.mode = mode
+        self.posts = []
 
     async def get(self, url, **kwargs):
         request = httpx.Request("GET", url)
@@ -27,6 +29,7 @@ class FakeAsyncClient:
         )
 
     async def post(self, url, json, **kwargs):
+        self.posts.append(json)
         request = httpx.Request("POST", url)
 
         if self.mode == "unavailable":
@@ -80,6 +83,7 @@ class FakeAsyncClient:
 class ProxyTests(unittest.TestCase):
     def make_client(self, mode="healthy"):
         fake_client = FakeAsyncClient(mode=mode)
+        self.fake_client = fake_client
 
         patcher = patch.object(
             app_module.httpx,
@@ -142,6 +146,87 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual(
             response.json()["choices"][0]["message"]["content"],
             "Mock reply: Hello test",
+        )
+
+    def test_chat_masks_pii_before_upstream_and_demasks_response(self):
+        client = self.make_client(mode="healthy")
+        original_email = "secret.person@example.com"
+
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "mock-model",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": (
+                            "Email клиента: "
+                            + original_email
+                        ),
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        upstream_payload = self.fake_client.posts[-1]
+        serialized = json.dumps(
+            upstream_payload,
+            ensure_ascii=False,
+        )
+
+        self.assertNotIn(
+            original_email,
+            serialized,
+        )
+        self.assertIn(
+            "<PII:email:",
+            upstream_payload["messages"][0]["content"],
+        )
+
+        client_content = (
+            response.json()["choices"][0]["message"]["content"]
+        )
+
+        self.assertIn(
+            original_email,
+            client_content,
+        )
+        self.assertNotIn(
+            "<PII:",
+            client_content,
+        )
+
+    def test_chat_stream_with_pii_fails_closed_before_upstream(self):
+        client = self.make_client(mode="healthy")
+        original_email = "stream.secret@example.com"
+
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "mock-model",
+                "stream": True,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": (
+                            "Email клиента: "
+                            + original_email
+                        ),
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(
+            "Streaming with detected PII is disabled",
+            response.json()["detail"],
+        )
+        self.assertEqual(
+            self.fake_client.posts,
+            [],
         )
 
     def test_chat_returns_502_when_upstream_is_unavailable(self):

@@ -22,6 +22,10 @@ from app.pii import (
     build_processor,
     log_pii_audit_event,
 )
+from app.pii.chat import (
+    finalize_chat_response,
+    prepare_chat_payload,
+)
 from app.pii.public_masking import render_public_mask
 from app.stats import ProxyStats
 from app.stream_routing import route_stream_request
@@ -150,6 +154,7 @@ if not pii_audit_logger.handlers:
 
 
 PROCESS_SYSTEM_ID = "autocheck"
+LLM_PROXY_SYSTEM_ID = "llm-proxy"
 
 
 class ProcessRequest(BaseModel):
@@ -179,6 +184,12 @@ async def lifespan(app: FastAPI):
         (
             ConsumerPolicy(
                 system_id=PROCESS_SYSTEM_ID,
+                enabled_types=frozenset(PiiType),
+                demask_enabled=True,
+                enabled=True,
+            ),
+            ConsumerPolicy(
+                system_id=LLM_PROXY_SYSTEM_ID,
                 enabled_types=frozenset(PiiType),
                 demask_enabled=True,
                 enabled=True,
@@ -452,6 +463,25 @@ async def chat_completions(request: Request):
     try:
         payload = await request.json()
 
+        prepared_chat = prepare_chat_payload(
+            payload,
+            request.app.state.pii_processor,
+            LLM_PROXY_SYSTEM_ID,
+        )
+        payload = prepared_chat.payload
+
+        if (
+            payload.get("stream") is True
+            and prepared_chat.contains_pii
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Streaming with detected PII is disabled "
+                    "to prevent unsafe partial demasking"
+                ),
+            )
+
         upstream_url = (
             f"{get_upstream_base_url()}/v1/chat/completions"
         )
@@ -534,9 +564,15 @@ async def chat_completions(request: Request):
                 "completed_requests"
             )
 
+            response_payload = finalize_chat_response(
+                routing_result.response.json(),
+                request.app.state.pii_processor,
+                prepared_chat.prepared_requests,
+            )
+
             return JSONResponse(
                 status_code=routing_result.response.status_code,
-                content=routing_result.response.json(),
+                content=response_payload,
             )
 
         if routing_result.error == "timeout":
