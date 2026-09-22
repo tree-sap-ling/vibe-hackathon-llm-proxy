@@ -404,3 +404,26 @@ Redis, load balancer и несколько proxy replica могут быть д�
 - предоставляемые LLM endpoint и credentials;
 - разрешённые внешние сервисы;
 - сценарии отказов в autocheck.
+
+## Per-system PII policy
+
+Список consumer-систем и их PII policy можно менять без правки Python-кода через
+`PII_POLICIES_JSON`. Если переменная не задана, сервис сохраняет совместимые
+defaults: `autocheck` и `llm-proxy`, все `PiiType`, `demask_enabled=true`,
+`enabled=true`.
+
+Пример:
+
+```bash
+export PII_POLICIES_JSON='[{"system_id":"autocheck","enabled_types":["*"],"demask_enabled":true,"enabled":true},{"system_id":"llm-proxy","enabled_types":["email","phone"],"demask_enabled":false,"enabled":true}]'
+```
+
+`enabled_types` принимает значения `PiiType` из кода (`email`, `phone`,
+`passport_rf`, `fio` и другие) либо одиночный wildcard `"*"`. Поля
+`demask_enabled` и `enabled` — JSON boolean. Неизвестные PII types, лишние поля,
+дубликаты `system_id` и неверные типы приводят к fail-fast ошибке при старте,
+чтобы опечатка в security policy не включала более широкие права молча.
+
+Текущая policy управляет списком детектируемых PII types, разрешением consumer
+и demasking. Стиль маскирования пока общий для типа PII и не настраивается
+per-system; это отдельное расширение roadmap.

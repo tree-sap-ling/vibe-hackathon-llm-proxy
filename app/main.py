@@ -13,11 +13,9 @@ from app.non_stream_routing import route_non_stream_request
 from app.provider_runtime import build_provider_runtimes
 from app.providers import get_provider_configs
 from app.pii import (
-    ConsumerPolicy,
     CorrelationConflictError,
     InMemoryCorrelationStore,
     PiiMetrics,
-    PiiType,
     build_pii_audit_event,
     build_processor,
     log_pii_audit_event,
@@ -26,6 +24,7 @@ from app.pii.chat import (
     finalize_chat_response,
     prepare_chat_payload,
 )
+from app.pii.config import get_consumer_policies
 from app.pii.public_masking import render_public_mask
 from app.stats import ProxyStats
 from app.stream_routing import route_stream_request
@@ -181,20 +180,7 @@ async def lifespan(app: FastAPI):
     app.state.stats = ProxyStats()
     app.state.pii_metrics = PiiMetrics()
     app.state.pii_processor = build_processor(
-        (
-            ConsumerPolicy(
-                system_id=PROCESS_SYSTEM_ID,
-                enabled_types=frozenset(PiiType),
-                demask_enabled=True,
-                enabled=True,
-            ),
-            ConsumerPolicy(
-                system_id=LLM_PROXY_SYSTEM_ID,
-                enabled_types=frozenset(PiiType),
-                demask_enabled=True,
-                enabled=True,
-            ),
-        )
+        get_consumer_policies()
     )
     app.state.pii_correlation = (
         InMemoryCorrelationStore()
