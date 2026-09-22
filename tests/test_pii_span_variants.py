@@ -66,6 +66,37 @@ class PiiSpanVariantTests(unittest.TestCase):
             ["г. Казань"],
         )
 
+    def test_birth_place_before_citizenship_keeps_both(self):
+        from app.pii.models import PiiType
+        from app.pii.registry import build_default_registry
+
+        text = (
+            "Место рождения: г. Казань. "
+            "Гражданство: Российская Федерация."
+        )
+
+        entities = build_default_registry().detect(text)
+
+        birth_places = [
+            text[entity.start:entity.end]
+            for entity in entities
+            if entity.pii_type == PiiType.BIRTH_PLACE
+        ]
+        citizenships = [
+            text[entity.start:entity.end]
+            for entity in entities
+            if entity.pii_type == PiiType.CITIZENSHIP
+        ]
+
+        self.assertEqual(
+            birth_places,
+            ["г. Казань"],
+        )
+        self.assertEqual(
+            citizenships,
+            ["Российская Федерация"],
+        )
+
     def test_citizenship_client_label(self):
         text = (
             "Гражданство клиента: "
