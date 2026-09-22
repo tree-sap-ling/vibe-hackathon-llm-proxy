@@ -27,6 +27,14 @@ class PiiIdentityAddressTests(unittest.TestCase):
             ["Иванов Иван Иванович"],
         )
 
+    def test_fio_accepts_consumer_qualifier(self):
+        text = "ФИО клиента: Иванов Иван Иванович"
+
+        self.assertEqual(
+            self.values_for(text, PiiType.FIO),
+            ["Иванов Иван Иванович"],
+        )
+
     def test_client_name_is_detected(self):
         text = "Клиент Петров Пётр Петрович"
 

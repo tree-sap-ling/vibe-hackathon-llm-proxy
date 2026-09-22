@@ -51,6 +51,20 @@ class PiiContextualDetectorTests(unittest.TestCase):
             ["15 мая 1990"],
         )
 
+    def test_birth_date_accepts_consumer_qualifier(self):
+        for text, expected in (
+            ("Дата рождения клиента: 15.03.1985.", "15.03.1985"),
+            (
+                "Дата рождения клиента: 15 марта 1985 года.",
+                "15 марта 1985 года",
+            ),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(
+                    self.values_for(text, PiiType.BIRTH_DATE),
+                    [expected],
+                )
+
     def test_invalid_birth_date_is_rejected(self):
         text = "Дата рождения: 31.02.1990"
 
@@ -106,6 +120,14 @@ class PiiContextualDetectorTests(unittest.TestCase):
             ["123"],
         )
 
+    def test_cvv_accepts_card_consumer_qualifier(self):
+        text = "CVV карты клиента: 123."
+
+        self.assertEqual(
+            self.values_for(text, PiiType.CVV),
+            ["123"],
+        )
+
     def test_cvc_and_security_code_variants(self):
         for text, expected in (
             ("cVc2: 987", "987"),
@@ -130,6 +152,14 @@ class PiiContextualDetectorTests(unittest.TestCase):
         self.assertEqual(
             self.values_for(text, PiiType.PIN),
             ["4321"],
+        )
+
+    def test_pin_accepts_card_consumer_qualifier(self):
+        text = "PIN карты клиента: 9876."
+
+        self.assertEqual(
+            self.values_for(text, PiiType.PIN),
+            ["9876"],
         )
 
     def test_pin_is_case_insensitive(self):

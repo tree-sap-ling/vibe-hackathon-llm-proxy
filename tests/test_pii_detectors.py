@@ -177,11 +177,31 @@ class PiiDetectorTests(unittest.TestCase):
             ],
         )
 
+    def test_passport_accepts_consumer_qualifier(self):
+        text = "Паспорт клиента: 4509 123456."
+
+        values = [
+            text[entity.start:entity.end]
+            for entity in detect_passport_rf(text)
+        ]
+
+        self.assertEqual(values, ["4509 123456"])
+
     def test_subdivision_code_requires_context(self):
         text = (
             "КОД ПОДРАЗДЕЛЕНИЯ: 770-001; "
             "а просто 123-456 без подписи."
         )
+
+        values = [
+            text[entity.start:entity.end]
+            for entity in detect_subdivision_code(text)
+        ]
+
+        self.assertEqual(values, ["770-001"])
+
+    def test_subdivision_code_accepts_passport_qualifier(self):
+        text = "Код подразделения паспорта: 770-001."
 
         values = [
             text[entity.start:entity.end]
