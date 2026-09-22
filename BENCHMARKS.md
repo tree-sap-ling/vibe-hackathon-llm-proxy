@@ -9,7 +9,7 @@
 
 ## `/process`: current release paired benchmark
 
-Current scorer-facing full-mask runtime — `9b7b37f`.
+Current release candidate — `9ee854b`. Release-like `/process` performance figures below were measured on full-mask runtime `9b7b37f` and retain that historical provenance.
 Benchmark выполнялся на working tree с этим exact patch непосредственно перед
 commit; после измерения код patch не менялся. Собирался обычный `Dockerfile`,
 container запускался default CMD с одним Uvicorn worker; client и server
@@ -111,7 +111,8 @@ Container logs не содержали тестовый raw email или вну�
 - synthetic corpus: 34/34;
 - adversarial corpus: 53/53;
 - exact-span corpus: 30/30;
-- полный regression suite на `9b7b37f`: 193/193.
+- historical full regression suite на `9b7b37f`: 193/193;
+- current release candidate `9ee854b`: 196/196.
 
 Эти цифры означают только прохождение наших собственных cases.
 Они не являются официальным quality score и не подтверждают target 95%

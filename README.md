@@ -346,7 +346,8 @@ curl -X POST http://127.0.0.1:8000/process \
 регрессии и диагностики. Они не являются официальным score: итоговая
 точность определяется скрытым эталонным датасетом организаторов.
 
-На current runtime `9b7b37f` полный regression suite прошёл `193/193`.
+На current release candidate `9ee854b` полный regression suite прошёл `196/196`.
+Приведённый ниже release-like `/process` benchmark был измерен на full-mask runtime `9b7b37f`; его цифры сохраняются с исходным provenance и не выдаются за повторный замер `9ee854b`.
 Release-like `/process` benchmark с тремя round на concurrency дал:
 c4 median 935.2 RPS (907.4–988.9), c6 median 1019.1 RPS
 (992.8–1040.4). На c6 worst measured p95 составил 11.047 ms для mask
