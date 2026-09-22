@@ -76,14 +76,22 @@ primary
 
 Официальный endpoint для автопроверки маскирования/демаскирования.
 
-Первый ответ использует **public shape-mask**, а не внутренние
-`<PII:...>` tokens. Для опубликованного в задании примера:
+Первый ответ использует **public scorer-facing mask**, а не внутренние
+`<PII:...>` tokens. Формат маски не является отдельным полем контракта:
+текущая стратегия полностью скрывает буквенно-цифровые символы PII,
+сохраняя разделители и известные служебные слова внутри широких spans.
+
+Для входа из опубликованного в задании примера текущий ответ:
 
 ```text
 Клиент Иванов Иван Иванович, паспорт 4509 123456
 →
-Клиент И. И. И., паспорт 45** ****56
+Клиент ****** **** ********, паспорт **** ******
 ```
+
+Например, `45 10 номер 654321` становится `** ** номер ******`, а
+`15 марта 1985 года` — `** ***** **** года`: PII скрывается полностью,
+но служебные слова не маскируются без необходимости.
 
 Внутренняя token-mask вместе с request-local vault используется только
 для точного обратного восстановления и через `/process` наружу не выдаётся.
@@ -338,12 +346,13 @@ curl -X POST http://127.0.0.1:8000/process \
 регрессии и диагностики. Они не являются официальным score: итоговая
 точность определяется скрытым эталонным датасетом организаторов.
 
-На current runtime `49ebad0` полный regression suite прошёл `189/189`.
-Финальный release-like `/process` benchmark дал 955.4 RPS при c4 и
-992.4 RPS при c6; repeated c6 sweep дал median 933.4 RPS
-(914.7–984.7). Это локальные измерения одной VirtualBox VM, поэтому
-они не заявляются как гарантированный production/official SLA.
-Текущий 100000-unit HTTP smoke: mask 227.753 ms, demask 28.138 ms,
+На current runtime `9b7b37f` полный regression suite прошёл `193/193`.
+Release-like `/process` benchmark с тремя round на concurrency дал:
+c4 median 935.2 RPS (907.4–988.9), c6 median 1019.1 RPS
+(992.8–1040.4). На c6 worst measured p95 составил 11.047 ms для mask
+и 9.538 ms для demask. Один из трёх c6 round был ниже 1000 RPS, поэтому
+это не заявляется как гарантированный production/official SLA.
+Текущий 100000-unit HTTP smoke: mask 180.093 ms, demask 10.716 ms,
 exact round-trip. Подробности и методика — в `BENCHMARKS.md`.
 
 ## Docker
@@ -403,7 +412,7 @@ Redis, load balancer и несколько proxy replica могут быть д�
 - Docker image.
 
 Официальный конкурсный контракт уже учтён в текущем `/process` path:
-paired mask/demask по `payload_id`, public shape-mask, `429` с
+paired mask/demask по `payload_id`, scorer-facing public mask, `429` с
 `Retry-After`, один HTTP worker для process-local correlation state,
 safe aggregate metrics и конфигурируемая per-system PII policy.
 

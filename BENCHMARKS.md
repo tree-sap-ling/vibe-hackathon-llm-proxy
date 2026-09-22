@@ -9,17 +9,17 @@
 
 ## `/process`: current release paired benchmark
 
-Финальный release-like benchmark выполнен на committed runtime `49ebad0`.
-Собирался текущий `Dockerfile`, контейнер запускался его обычным CMD с одним
-Uvicorn worker; client и server работали на одной Ubuntu 24.04 VirtualBox VM.
-Поэтому результаты подходят для локальной regression/diagnostics, но не являются
-production SLA и не гарантируют ту же пропускную способность на другой
-инфраструктуре.
+Current scorer-facing full-mask runtime — `9b7b37f`.
+Benchmark выполнялся на working tree с этим exact patch непосредственно перед
+commit; после измерения код patch не менялся. Собирался обычный `Dockerfile`,
+container запускался default CMD с одним Uvicorn worker; client и server
+работали на одной Ubuntu 24.04 VirtualBox VM.
 
-В основном прогоне использовались 2000 пар mask → demask на точку
-(4000 HTTP requests), exact check опубликованной shape-mask и exact round-trip
-для каждой пары. Все запросы завершились `HTTP 200`; container logs не содержали
-проверяемые raw PII или внутренние `<PII:...>` tokens.
+Каждый round использовал 1500 пар mask → demask, то есть 3000 HTTP requests.
+Для каждой пары проверялись exact full-hide public mask, exact demask и
+`HTTP 200` на обоих запросах. Перед измерениями выполнен warmup из 40 пар.
+Container logs не содержали проверяемые raw PII или внутренние `<PII:...>`
+tokens.
 
 ### Default Docker CMD
 
@@ -27,34 +27,29 @@ production SLA и не гарантируют ту же пропускную с�
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-| Client concurrency | Successful pairs | HTTP 200 | HTTP RPS | MASK p50 | MASK p95 | MASK p99 | DEMASK p50 | DEMASK p95 | DEMASK p99 |
-|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 4 | 2000/2000 | 4000/4000 | 955.4 | 3.845 ms | 5.994 ms | 7.811 ms | 3.684 ms | 5.611 ms | 7.402 ms |
-| 6 | 2000/2000 | 4000/4000 | 992.4 | 5.558 ms | 10.854 ms | 15.210 ms | 4.892 ms | 9.337 ms | 13.007 ms |
+| Concurrency | Round | HTTP RPS | MASK p50 | MASK p95 | MASK p99 | DEMASK p50 | DEMASK p95 | DEMASK p99 |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 4 | 1 | 907.4 | 4.106 ms | 6.538 ms | 9.603 ms | 3.834 ms | 6.073 ms | 7.859 ms |
+| 4 | 2 | 935.2 | 3.976 ms | 6.192 ms | 8.464 ms | 3.821 ms | 6.012 ms | 7.514 ms |
+| 4 | 3 | 988.9 | 3.808 ms | 5.864 ms | 7.011 ms | 3.630 ms | 5.464 ms | 6.296 ms |
+| 6 | 1 | 1019.1 | 5.323 ms | 10.527 ms | 15.071 ms | 4.789 ms | 9.224 ms | 12.998 ms |
+| 6 | 2 | 992.8 | 5.445 ms | 11.047 ms | 16.142 ms | 4.803 ms | 9.538 ms | 13.958 ms |
+| 6 | 3 | 1040.4 | 5.342 ms | 10.300 ms | 15.079 ms | 4.568 ms | 8.465 ms | 12.193 ms |
 
-Ориентир 1000 HTTP RPS в этом конкретном финальном прогоне не был устойчиво
-превышен, хотя c6 приблизился к нему. При этом p95 latency оставалась порядка
-миллисекунд и существенно ниже ориентира 1 s.
-
-### Repeated scaling sweep
-
-Чтобы не делать вывод по одному удачному прогону, тот же release-like runtime
-измерялся по три раза при c6/c8/c12. Каждый round — 1500 пар, то есть
-3000 HTTP requests, с exact mask/demask checks и только `HTTP 200`.
+Summary:
 
 | Concurrency | Median RPS | Min RPS | Max RPS | Worst MASK p95 | Worst DEMASK p95 |
 |---:|---:|---:|---:|---:|---:|
-| 6 | 933.4 | 914.7 | 984.7 | 11.589 ms | 10.599 ms |
-| 8 | 848.5 | 822.0 | 854.9 | 23.040 ms | 17.695 ms |
-| 12 | 682.3 | 492.5 | 718.0 | 52.989 ms | 35.599 ms |
+| 4 | 935.2 | 907.4 | 988.9 | 6.538 ms | 6.073 ms |
+| 6 | 1019.1 | 992.8 | 1040.4 | 11.047 ms | 9.538 ms |
 
-На этой VM увеличение client concurrency выше c6 снижало throughput, поэтому
-runtime не переводился на более высокую concurrency только ради единичной цифры.
+На c6 median пересёк ориентир 1000 HTTP RPS, но один из трёх round был
+992.8 RPS, поэтому результат не формулируется как гарантированные или
+стабильные >1000 RPS. Все измеренные p95/p99 остаются существенно ниже
+ориентира 1 s.
 
-Отдельный exploratory запуск с `--no-access-log` один раз дал c4 median
-1045.3 RPS, но повторная проверка того же runtime-настройки дала median
-901.5 RPS. Из-за отсутствия воспроизводимости этот tweak не был закоммичен
-и результат >1000 RPS не используется как финальное доказательство.
+Это локальный release-like regression benchmark, а не гарантия official или
+production SLA на другой инфраструктуре.
 
 ## `/process`: overload behavior
 
@@ -84,20 +79,21 @@ Retry-After=1: 58/58
 
 ## Large payload smoke
 
-На current runtime `49ebad0` отдельный HTTP smoke использовал synthetic payload
-ровно из `100000 whitespace-separated units`.
+На exact full-mask patch, затем закоммиченном как `9b7b37f`, отдельный HTTP
+smoke использовал synthetic payload ровно из `100000 whitespace-separated
+units`, с тестовым email в последнем unit.
 
 Результат:
 
 | Метрика | Значение |
 |---|---:|
 | Whitespace-separated units | 100000 |
-| Characters | 700016 |
-| UTF-8 bytes | 1300004 |
+| Characters | 600017 |
+| UTF-8 bytes | 1100012 |
 | Mask HTTP status | 200 |
-| Mask latency | 227.753 ms |
+| Mask latency | 180.093 ms |
 | Demask HTTP status | 200 |
-| Demask latency | 28.138 ms |
+| Demask latency | 10.716 ms |
 | Raw test email in masked result | no |
 | Exact round-trip | yes |
 
@@ -115,7 +111,7 @@ Container logs не содержали тестовый raw email или вну�
 - synthetic corpus: 34/34;
 - adversarial corpus: 53/53;
 - exact-span corpus: 30/30;
-- полный regression suite на `49ebad0`: 189/189.
+- полный regression suite на `9b7b37f`: 193/193.
 
 Эти цифры означают только прохождение наших собственных cases.
 Они не являются официальным quality score и не подтверждают target 95%
