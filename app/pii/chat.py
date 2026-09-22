@@ -17,6 +17,66 @@ class PreparedChatPayload:
         )
 
 
+def _prepare_chat_text(
+    container,
+    field_name: str,
+    text: str,
+    processor: PiiProcessor,
+    system_id: str,
+) -> PreparedRequest:
+    prepared = processor.prepare_request(
+        system_id,
+        text,
+    )
+    container[field_name] = prepared.masked_text
+    return prepared
+
+
+def _prepare_chat_message(
+    message: dict,
+    processor: PiiProcessor,
+    system_id: str,
+) -> list[PreparedRequest]:
+    content = message.get("content")
+
+    if isinstance(content, str):
+        return [
+            _prepare_chat_text(
+                message,
+                "content",
+                content,
+                processor,
+                system_id,
+            )
+        ]
+
+    if not isinstance(content, list):
+        return []
+
+    prepared_requests: list[PreparedRequest] = []
+
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+
+        text = part.get("text")
+
+        if not isinstance(text, str):
+            continue
+
+        prepared_requests.append(
+            _prepare_chat_text(
+                part,
+                "text",
+                text,
+                processor,
+                system_id,
+            )
+        )
+
+    return prepared_requests
+
+
 def prepare_chat_payload(
     payload: dict,
     processor: PiiProcessor,
@@ -37,35 +97,13 @@ def prepare_chat_payload(
         if not isinstance(message, dict):
             continue
 
-        content = message.get("content")
-
-        if isinstance(content, str):
-            prepared = processor.prepare_request(
+        prepared_requests.extend(
+            _prepare_chat_message(
+                message,
+                processor,
                 system_id,
-                content,
             )
-            message["content"] = prepared.masked_text
-            prepared_requests.append(prepared)
-            continue
-
-        if not isinstance(content, list):
-            continue
-
-        for part in content:
-            if not isinstance(part, dict):
-                continue
-
-            text = part.get("text")
-
-            if not isinstance(text, str):
-                continue
-
-            prepared = processor.prepare_request(
-                system_id,
-                text,
-            )
-            part["text"] = prepared.masked_text
-            prepared_requests.append(prepared)
+        )
 
     return PreparedChatPayload(
         payload=masked_payload,
@@ -97,23 +135,21 @@ def finalize_chat_response(
     restored = deepcopy(response_payload)
     choices = restored.get("choices")
 
-    if not isinstance(choices, list):
-        return restored
+    if isinstance(choices, list):
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
 
-    for choice in choices:
-        if not isinstance(choice, dict):
-            continue
+            message = choice.get("message")
 
-        message = choice.get("message")
+            if isinstance(message, dict):
+                content = message.get("content")
 
-        if isinstance(message, dict):
-            content = message.get("content")
-
-            if isinstance(content, str):
-                message["content"] = _demask_text(
-                    content,
-                    processor,
-                    prepared_requests,
-                )
+                if isinstance(content, str):
+                    message["content"] = _demask_text(
+                        content,
+                        processor,
+                        prepared_requests,
+                    )
 
     return restored

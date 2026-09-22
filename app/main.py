@@ -430,6 +430,135 @@ async def process(
         await gate.release()
 
 
+def _upstream_http_exception(error):
+    if error == "timeout":
+        return HTTPException(
+            status_code=504,
+            detail="Upstream provider timed out",
+        )
+
+    if error == "circuit_open":
+        return HTTPException(
+            status_code=503,
+            detail="Upstream circuit is open",
+        )
+
+    if error == "upstream_5xx":
+        return HTTPException(
+            status_code=502,
+            detail="Upstream provider failed",
+        )
+
+    return HTTPException(
+        status_code=502,
+        detail="Upstream provider is unavailable",
+    )
+
+
+async def _stream_chat_response(
+    request: Request,
+    payload,
+):
+    routing_result = await route_stream_request(
+        request.app.state.http_client,
+        request.app.state.provider_runtimes,
+        payload,
+        request.app.state.stats,
+        routing_timeout=request.app.state.routing_timeout,
+    )
+
+    if routing_result.response is None:
+        raise _upstream_http_exception(
+            routing_result.error
+        )
+
+    upstream_response = routing_result.response
+    provider_runtime = routing_result.provider_runtime
+
+    content_type = upstream_response.headers.get(
+        "content-type"
+    )
+
+    response_headers = {}
+
+    if content_type:
+        response_headers["content-type"] = content_type
+
+    return StreamingResponse(
+        relay_stream(
+            upstream_response,
+            request.app.state.stats,
+            request.app.state.concurrency_gate,
+            provider_runtime.circuit_breaker,
+            first_chunk=routing_result.first_chunk,
+            stream_iterator=routing_result.stream_iterator,
+        ),
+        status_code=upstream_response.status_code,
+        headers=response_headers,
+        media_type=(
+            None
+            if content_type
+            else "text/event-stream"
+        ),
+    )
+
+
+async def _non_stream_chat_response(
+    request: Request,
+    payload,
+    prepared_chat,
+):
+    routing_started = perf_counter()
+
+    routing_result = await route_non_stream_request(
+        request.app.state.http_client,
+        request.app.state.provider_runtimes,
+        payload,
+        request.app.state.stats,
+        routing_timeout=request.app.state.routing_timeout,
+    )
+
+    routing_elapsed_seconds = perf_counter() - routing_started
+
+    if routing_result.response is None:
+        raise _upstream_http_exception(
+            routing_result.error
+        )
+
+    await request.app.state.stats.increment(
+        "completed_requests"
+    )
+
+    upstream_payload = routing_result.response.json()
+    usage = upstream_payload.get("usage")
+
+    if (
+        isinstance(usage, dict)
+        and 200 <= routing_result.response.status_code < 300
+    ):
+        total_tokens = usage.get("total_tokens")
+
+        if (
+            isinstance(total_tokens, int)
+            and not isinstance(total_tokens, bool)
+        ):
+            await request.app.state.stats.record_token_usage(
+                total_tokens=total_tokens,
+                observed_seconds=routing_elapsed_seconds,
+            )
+
+    response_payload = finalize_chat_response(
+        upstream_payload,
+        request.app.state.pii_processor,
+        prepared_chat.prepared_requests,
+    )
+
+    return JSONResponse(
+        status_code=routing_result.response.status_code,
+        content=response_payload,
+    )
+
+
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     await request.app.state.stats.increment("total_requests")
@@ -469,143 +598,20 @@ async def chat_completions(request: Request):
                 ),
             )
 
-        upstream_url = (
-            f"{get_upstream_base_url()}/v1/chat/completions"
-        )
-
         if payload.get("stream") is True:
-            routing_result = await route_stream_request(
-                request.app.state.http_client,
-                request.app.state.provider_runtimes,
+            response = await _stream_chat_response(
+                request,
                 payload,
-                request.app.state.stats,
-                routing_timeout=request.app.state.routing_timeout,
             )
-
-            if routing_result.response is None:
-                if routing_result.error == "timeout":
-                    raise HTTPException(
-                        status_code=504,
-                        detail="Upstream provider timed out",
-                    )
-
-                if routing_result.error == "circuit_open":
-                    raise HTTPException(
-                        status_code=503,
-                        detail="Upstream circuit is open",
-                    )
-
-                if routing_result.error == "upstream_5xx":
-                    raise HTTPException(
-                        status_code=502,
-                        detail="Upstream provider failed",
-                    )
-
-                raise HTTPException(
-                    status_code=502,
-                    detail="Upstream provider is unavailable",
-                )
-
-            upstream_response = routing_result.response
-            provider_runtime = routing_result.provider_runtime
-
-            content_type = upstream_response.headers.get(
-                "content-type"
-            )
-
-            response_headers = {}
-
-            if content_type:
-                response_headers["content-type"] = content_type
-
             release_gate = False
+            return response
 
-            return StreamingResponse(
-                relay_stream(
-                    upstream_response,
-                    request.app.state.stats,
-                    request.app.state.concurrency_gate,
-                    provider_runtime.circuit_breaker,
-                    first_chunk=routing_result.first_chunk,
-                    stream_iterator=routing_result.stream_iterator,
-                ),
-                status_code=upstream_response.status_code,
-                headers=response_headers,
-                media_type=(
-                    None
-                    if content_type
-                    else "text/event-stream"
-                ),
-            )
-
-        routing_started = perf_counter()
-
-        routing_result = await route_non_stream_request(
-            request.app.state.http_client,
-            request.app.state.provider_runtimes,
+        return await _non_stream_chat_response(
+            request,
             payload,
-            request.app.state.stats,
-            routing_timeout=request.app.state.routing_timeout,
+            prepared_chat,
         )
 
-        routing_elapsed_seconds = perf_counter() - routing_started
-
-        if routing_result.response is not None:
-            await request.app.state.stats.increment(
-                "completed_requests"
-            )
-
-            upstream_payload = routing_result.response.json()
-            usage = upstream_payload.get("usage")
-
-            if (
-                isinstance(usage, dict)
-                and 200 <= routing_result.response.status_code < 300
-            ):
-                total_tokens = usage.get("total_tokens")
-
-                if (
-                    isinstance(total_tokens, int)
-                    and not isinstance(total_tokens, bool)
-                ):
-                    await request.app.state.stats.record_token_usage(
-                        total_tokens=total_tokens,
-                        observed_seconds=routing_elapsed_seconds,
-                    )
-
-            response_payload = finalize_chat_response(
-                upstream_payload,
-                request.app.state.pii_processor,
-                prepared_chat.prepared_requests,
-            )
-
-            return JSONResponse(
-                status_code=routing_result.response.status_code,
-                content=response_payload,
-            )
-
-        if routing_result.error == "timeout":
-            raise HTTPException(
-                status_code=504,
-                detail="Upstream provider timed out",
-            )
-
-        if routing_result.error == "circuit_open":
-            raise HTTPException(
-                status_code=503,
-                detail="Upstream circuit is open",
-            )
-
-        if routing_result.error == "upstream_5xx":
-            raise HTTPException(
-                status_code=502,
-                detail="Upstream provider failed",
-            )
-
-        raise HTTPException(
-            status_code=502,
-            detail="Upstream provider is unavailable",
-        )
     finally:
         if release_gate:
             await request.app.state.concurrency_gate.release()

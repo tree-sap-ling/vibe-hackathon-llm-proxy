@@ -318,11 +318,9 @@ _PIN_PATTERN = re.compile(
 )
 
 
-def _valid_calendar_date(value: str) -> bool:
-    from datetime import date
-
-    normalized = value.strip().lower()
-
+def _calendar_date_candidates(
+    normalized: str,
+) -> tuple[tuple[int, int, int], ...]:
     text_match = re.fullmatch(
         r"(?P<day>\d{1,2})\s+"
         r"(?P<month>[а-яё]+)\s+"
@@ -331,56 +329,59 @@ def _valid_calendar_date(value: str) -> bool:
         re.IGNORECASE,
     )
 
-    candidates = []
-
     if text_match:
         month = _RU_MONTHS.get(
             text_match.group("month")
         )
 
         if month is None:
-            return False
+            return ()
 
-        candidates.append(
+        return (
             (
                 int(text_match.group("year")),
                 month,
                 int(text_match.group("day")),
-            )
+            ),
         )
-    else:
-        parts = re.split(r"[./-]", normalized)
 
-        if len(parts) != 3:
-            return False
+    parts = re.split(r"[./-]", normalized)
 
-        first, second, third = parts
+    if len(parts) != 3:
+        return ()
 
-        try:
-            a = int(first)
-            b = int(second)
-            c = int(third)
-        except ValueError:
-            return False
+    first, second, third = parts
 
-        if len(first) == 4:
-            candidates.extend(
-                (
-                    (a, b, c),
-                    (a, c, b),
-                )
-            )
-        elif len(third) == 4:
-            candidates.extend(
-                (
-                    (c, b, a),
-                    (c, a, b),
-                )
-            )
-        else:
-            return False
+    try:
+        a = int(first)
+        b = int(second)
+        c = int(third)
+    except ValueError:
+        return ()
 
-    for year, month, day in candidates:
+    if len(first) == 4:
+        return (
+            (a, b, c),
+            (a, c, b),
+        )
+
+    if len(third) == 4:
+        return (
+            (c, b, a),
+            (c, a, b),
+        )
+
+    return ()
+
+
+def _valid_calendar_date(value: str) -> bool:
+    from datetime import date
+
+    normalized = value.strip().lower()
+
+    for year, month, day in _calendar_date_candidates(
+        normalized
+    ):
         if not 1900 <= year <= 2100:
             continue
 
@@ -392,7 +393,6 @@ def _valid_calendar_date(value: str) -> bool:
         return True
 
     return False
-
 
 def _detect_contextual_date(
     text: str,
