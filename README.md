@@ -284,6 +284,11 @@ endpoint возвращает `HTTP 429 Too Many Requests` с `Retry-After: 1`,
 
 ## Тесты
 
+Команды в разделах «Тесты» и «Load testing» относятся к полному
+VCS-репозиторию. Финальный submission ZIP содержит runtime-код и
+документацию; вспомогательные каталоги `tests/` и `scripts/` в него
+не включаются.
+
 Полный набор:
 
 ```bash
@@ -346,14 +351,14 @@ curl -X POST http://127.0.0.1:8000/process \
 регрессии и диагностики. Они не являются официальным score: итоговая
 точность определяется скрытым эталонным датасетом организаторов.
 
-На current release candidate `5c50898` полный regression suite прошёл `196/196`.
+На runtime baseline `5c50898` полный regression suite прошёл `196/196`. Последующие финальные commits меняют только документацию; runtime-код относительно этого baseline не изменён.
 Приведённый ниже release-like `/process` benchmark был измерен на full-mask runtime `9b7b37f`; его цифры сохраняются с исходным provenance и не выдаются за повторный замер `5c50898`.
 Release-like `/process` benchmark с тремя round на concurrency дал:
 c4 median 935.2 RPS (907.4–988.9), c6 median 1019.1 RPS
 (992.8–1040.4). На c6 worst measured p95 составил 11.047 ms для mask
 и 9.538 ms для demask. Один из трёх c6 round был ниже 1000 RPS, поэтому
 это не заявляется как гарантированный production/official SLA.
-Текущий 100000-unit HTTP smoke: mask 180.093 ms, demask 10.716 ms,
+Отдельный 100000-unit HTTP smoke: mask 180.093 ms, demask 10.716 ms,
 exact round-trip. Подробности и методика — в `BENCHMARKS.md`.
 
 ## Docker
